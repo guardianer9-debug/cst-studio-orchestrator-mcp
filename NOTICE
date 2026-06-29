@@ -1,0 +1,21 @@
+CST Studio Orchestrator MCP
+===========================
+
+This project is derived from:
+
+  mcp-cst-studio
+  https://github.com/RFingAdam/mcp-cst-studio
+
+The upstream project is licensed under AGPL-3.0-or-later. This derivative
+keeps the same license.
+
+Notable changes in this derivative include:
+
+- Design Studio schematic MCP tools for RLC blocks, external ports, nets, and schematic inspection.
+- Generic `project.schematic` RemoteObject discovery and invocation tools.
+- Local validation against CST Studio Suite 2025.2 for schematic block creation, net connection, and generic method calls.
+- Project positioning around unified CST Studio Suite orchestration for antennas,
+  RF/EM simulation, PCB/SI, schematic design, and field-circuit co-simulation.
+
+CST Studio Suite is a separate commercial product from Dassault Systemes /
+SIMULIA. This project does not bundle or redistribute CST Studio Suite.

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "cst-studio-orchestrator": {
+      "command": "cst-studio-orchestrator-mcp",
+      "env": {
+        "CST_PATH": "D:\\CST2025",
+        "CST_WORK_DIR": "D:\\cst_projects",
+        "CST_VERSION": "2025",
+        "PYTHONPATH": "D:\\CST2025\\AMD64\\python_cst_libraries"
+      }
+    }
+  }
+}
