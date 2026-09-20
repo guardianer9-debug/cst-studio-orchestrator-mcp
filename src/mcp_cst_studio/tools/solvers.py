@@ -606,7 +606,10 @@ def _get_solver_info(arguments: dict, client: CSTClient) -> list[TextContent]:
     script = "\n".join(vba_lines)
 
     if client.connected:
-        result = client.execute_vba(script)
+        model = client._project.model3d
+        result = {"status": "ok", "solver": model.get_active_solver_name(timeout=10),
+                  "frequency_min": model.Solver.GetFmin(), "frequency_max": model.Solver.GetFmax(),
+                  "frequency_unit": model.Units.GetUnit("Frequency")}
     else:
         result = {
             "status": "offline",

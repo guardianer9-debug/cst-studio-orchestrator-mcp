@@ -15,3 +15,21 @@
 新问题追加，不覆盖旧失败。遇到相同症状先检索本表及对应原始日志。未知根因保持未知，不追认当时未记录的信息。
 
 | QD-10 MCP 握手失败 | 原 server 在进入协议前启动 CST，长启动无法及时握手；实际 Pi 首次失败 | 服务先提供元数据；显式创建/打开时才连接 CST | PROTOCOL-01、PI222-02 元数据/状态通过 | 后续真实打开单独记录，不把离线状态当连接成功 |
+
+
+## D2 新增排查
+
+| 编号 | 问题—原因 | 修复 | 复测与条件 |
+|---|---|---|---|
+| QD-11 | hide-only 新实例未注册接口，Python环境清理未解决 | 启动时同时quiet，不能等连接后再quiet | STARTUP-QUIET-03及后续多个副本；只确认对本机有效，不推断具体弹窗内容 |
+| QD-12 | 离散端口删除提示错误，块删除又依赖隐式选中对象 | 3D使用已实测 Port.Delete(number)；Block.Delete必须显式target_name；查询后不依赖当前选择 | PI222-03B、Mock target/副作用测试 |
+| QD-13 | 原端口查询MsgBox阻塞隐藏窗口 | cst_list_ports改为结构化树编号与属性查询，实时VBA禁止MsgBox/InputBox | READ-FIXES-02；未点击其他实例对话框 |
+| QD-14 | get_mesh_info/get_mesh_quality调用Mesh.Update，读写混淆 | 纯getter，未取得指标明确列为unavailable，不生成网格 | READ-FIXES-02历史/网格均不变 |
+| QD-15 | 直接调用GetXPos对本机探针报坐标系错误 | 读坐标系及GetPosition1/2/3，保留表达式，不擅自转换坐标 | 222三处场探针实际读回成功 |
+| QD-16 | 只复制.cst并不保证包含全部旧数值结果 | 默认只把它当建模参考；求解生成新数据，旧外部结果留原处，不用缺失结果伪称新运行 | DIPOLE-VIEW-01为负例，后续完整新运行另记 |
+| QD-17 | Farfield Cuts并非CalculatePoint的3D输入 | 选择Farfields根下一层3D结果，配置方向性与线性标度后读取 | FARFIELD-READ-05、PROTOCOL-LIVE-02 |
+| QD-18 | 结果库interactive提示污染MCP stdout | 库诊断重定向stderr；显式选择3D/DS结果域，避免MWS不存在的DS模块 | 真实stdio读曲线通过；提示保留stderr |
+| QD-19 | 参数修改作为History命令会混入固定赋值 | 原生StoreParameter+RebuildOnParametricChange，再读取表达式和值 | L82/L80几何边界及新求解已实测 |
+| QD-20 | Agent上游服务错误打断调用 | 原错误与请求保留，独立短会话重试，不归因CST、不捏造已执行工具 | 实际Pi会话记录；后续终态另记 |
+
+CAD导出与远场绘图配置当前使用本机已探测的私有 model3d._execute_vba_code，仅固定内部配方、不作为任意脚本接口。精确build门控、历史不变和CAD边界核对必须保留；新CST版本需要重新验证。

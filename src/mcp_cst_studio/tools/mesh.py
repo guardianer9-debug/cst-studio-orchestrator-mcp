@@ -460,13 +460,15 @@ def _set_adaptive_mesh(arguments: dict, client: CSTClient) -> list[TextContent]:
 
 
 def _get_mesh_info(arguments: dict, client: CSTClient) -> list[TextContent]:
-    # Build VBA that queries mesh statistics
-    vba = VBABuilder("Mesh")
-    vba.call("Update")
+    # A read must not invoke Mesh.Update (which can generate/update a mesh).
+    vba = VBABuilder("Mesh").raw_line("Debug.Print Mesh.GetNumberOfMeshCells()")
     script = vba.build()
 
     if client.connected:
-        result = client.execute_vba(script)
+        mesh = client._project.model3d.Mesh
+        count = mesh.GetNumberOfMeshCells()
+        result = {"status": "ok", "cells": count, "mesh_type": mesh.GetMeshType(),
+                  "mesh_present": count > 0, "generated_by_this_call": False}
     else:
         result = {
             "status": "offline",
@@ -491,12 +493,16 @@ def _get_mesh_info(arguments: dict, client: CSTClient) -> list[TextContent]:
 
 
 def _get_mesh_quality(arguments: dict, client: CSTClient) -> list[TextContent]:
-    vba = VBABuilder("Mesh")
-    vba.call("Update")
+    vba = VBABuilder("Mesh").raw_line("Debug.Print Mesh.GetNumberOfMeshCells()")
     script = vba.build()
 
     if client.connected:
-        result = client.execute_vba(script)
+        mesh = client._project.model3d.Mesh
+        count = mesh.GetNumberOfMeshCells()
+        result = {"status": "partial", "cells": count, "generated_by_this_call": False,
+                  "critical_cells": mesh.GetNumberOfCriticalCells() if count else None,
+                  "critical_areas": mesh.GetNumberOfCriticalAreas() if count else None,
+                  "unavailable": ["aspect_ratio_histogram", "cells_per_wavelength"]}
     else:
         result = {
             "status": "offline",

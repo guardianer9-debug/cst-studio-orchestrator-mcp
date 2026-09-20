@@ -6,6 +6,8 @@ import logging
 import os
 import re
 import time
+import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +55,9 @@ class CSTClient:
 
     @property
     def mode(self) -> str:
-        return "connected" if self.connected else "offline"
+        if self.connected:
+            return "connected"
+        return "disconnected" if CST_AVAILABLE and self._config.connection_mode != "offline" else "offline"
 
     def connect(self) -> dict:
         """Connect to CST Design Environment.
@@ -77,7 +81,9 @@ class CSTClient:
                 self._de = cst.interface.DesignEnvironment.connect(self._config.pid)
             elif self._config.connection_mode == "new":
                 self._de = cst.interface.DesignEnvironment(
-                    options=["-hide"] if self._config.hidden else []
+                    # Quiet must apply during startup; setting it after connect is too late
+                    # when a hidden startup dialog prevents API registration.
+                    options=["-hide", "-quiet"] if self._config.hidden else ["-quiet"]
                 )
                 self._owns_environment = True
                 self._de.set_quiet_mode(True)
@@ -95,6 +101,15 @@ class CSTClient:
 
     def disconnect(self) -> dict:
         """Disconnect from CST."""
+        if getattr(self, "_task_job", None):
+            from mcp_cst_studio.task_runner import task_status, TERMINAL
+            state = task_status(self)["state"]
+            if state not in TERMINAL:
+                return {"status": "job_running", "message": "Owned CST retained under task supervisor"}
+            if state == "terminated":
+                self._de = self._project = self._project_path = None
+                self._owns_environment = self._config.connected = False
+                return {"status": "disconnected", "message": "Owned process was already terminated"}
         if self._de is not None:
             try:
                 if self._owns_environment:
@@ -230,6 +245,8 @@ class CSTClient:
         if not self.connected or self._project is None:
             return {"status": "offline", "vba": vba_code,
                     "message": "VBA generated; no CST execution occurred."}
+        if re.search(r"\b(?:MsgBox|InputBox)\b", vba_code, re.IGNORECASE):
+            return {"status": "error", "message": "Interactive VBA prompts are disabled; use structured readback tools."}
         try:
             model = self._project.model3d
             if model is None:
@@ -263,6 +280,9 @@ class CSTClient:
 
     def solver_status(self) -> dict:
         """A failed query is unknown, never evidence that a solver stopped."""
+        if getattr(self, "_task_job", None):
+            from mcp_cst_studio.task_runner import task_status
+            return task_status(self)
         if not self.connected or self._project is None:
             return {"status": "offline", "running": None}
         try:
@@ -276,6 +296,22 @@ class CSTClient:
 
     def solver_command(self, command: str) -> dict:
         """Native asynchronous 3D controls. DS task execution has a separate contract."""
+        if getattr(self, "_task_job", None):
+            from mcp_cst_studio.task_runner import cancel_task, task_status, TERMINAL
+            if command == "stop":
+                return cancel_task(self)
+            if task_status(self)["state"] not in TERMINAL:
+                return {"status": "error", "message": "Schematic task active; use its status/stop control"}
+            if command == "start":
+                self._task_job = None
+        if command == "start" and self._owns_environment:
+            from mcp_cst_studio.task_runner import start_task
+            state = self.solver_status()
+            if state.get("status") != "ok":
+                return state
+            if state.get("running"):
+                return {"status": "error", "message": "A solver is already running"}
+            return start_task(self, "current 3D solver", domain="3d")
         if not self.connected or self._project is None:
             return {"status": "offline"}
         methods = {"start": "start_solver", "stop": "abort_solver",
@@ -613,6 +649,7 @@ class CSTClient:
         method_name: str,
         args: list[Any] | None = None,
         kwargs: dict[str, Any] | None = None,
+        target_name: str | None = None,
     ) -> dict:
         """Call project.schematic.<object_name>.<method_name>(*args, **kwargs)."""
         try:
@@ -626,6 +663,17 @@ class CSTClient:
                 raise RuntimeError("kwargs must be an object")
             schematic = self._schematic()
             obj = getattr(schematic, object_name)
+            if object_name == "SimulationTask" and method_name == "Update":
+                raise RuntimeError("Use cst_run_task so execution has durable status, limits and cancellation")
+            if method_name == "Delete" and object_name in ("Block", "CircuitProbe", "SimulationTask") and not target_name:
+                raise ValueError("Delete requires target_name; readback changes CST's current object selection")
+            if target_name:
+                if object_name not in ("Block", "CircuitProbe", "SimulationTask", "ExternalPort"):
+                    raise ValueError("target_name is supported only for named schematic objects")
+                obj.Reset()
+                obj.Name(target_name)
+                if not obj.DoesExist():
+                    raise ValueError(f"Schematic target not found: {target_name}")
             method = getattr(obj, method_name)
             if not callable(method):
                 raise RuntimeError(f"{object_name}.{method_name} is not callable")
@@ -635,6 +683,7 @@ class CSTClient:
                 "interface": "schematic",
                 "object_name": object_name,
                 "method_name": method_name,
+                "target_name": target_name,
                 "result": self._jsonable(result),
             }
         except Exception as e:
@@ -757,7 +806,10 @@ class CSTClient:
             try:
                 if domain not in ("3d", "schematic"):
                     raise ValueError("domain must be 3d or schematic")
-                result = cst.results.ProjectFile(self._project_path, allow_interactive=True)
+                # CST's interactive result reader prints a notice; stdout is the
+                # MCP transport, so keep library diagnostics on stderr.
+                with redirect_stdout(sys.stderr):
+                    result = cst.results.ProjectFile(self._project_path, allow_interactive=True)
                 module = result.get_3d() if domain == "3d" else result.get_schematic()
                 item = module.get_result_item(tree_path)
                 y = [complex(v) for v in item.get_ydata()]
@@ -776,14 +828,63 @@ class CSTClient:
             "message": "Result retrieval requires connected mode with a completed simulation.",
         }
 
-    def list_results(self) -> dict:
+    def list_results(self, domain: str = "3d") -> dict:
         if not self.connected or not self._project_path:
             return {"status": "offline"}
         try:
-            project = cst.results.ProjectFile(self._project_path, allow_interactive=True)
-            return {"status": "ok", "project": self._project_path,
-                    "3d": project.get_3d().get_tree_items(),
-                    "schematic": project.get_schematic().get_tree_items()}
+            with redirect_stdout(sys.stderr):
+                project = cst.results.ProjectFile(self._project_path, allow_interactive=True)
+            if domain not in ("3d", "schematic"):
+                raise ValueError("domain must be 3d or schematic")
+            module = project.get_3d() if domain == "3d" else project.get_schematic()
+            return {"status": "ok", "project": self._project_path, "domain": domain,
+                    "items": module.get_tree_items()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    def set_parameter(self, name: str, value: Any, description: str | None = None) -> dict:
+        """Update the parameter table outside history, then rebuild and read it back."""
+        if not self.connected or self._project is None:
+            return {"status": "offline"}
+        try:
+            model = self._project.model3d
+            model.StoreParameter(name, str(value))
+            if description:
+                model.SetParameterDescription(name, description)
+            model.RebuildOnParametricChange(False, True)
+            result = self.read_parameters(name)
+            return {"status": "executed" if result["status"] == "ok" else "error",
+                    "readback": result, "parameter": name, "value": value}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "partial_execution_possible": True}
+
+    def list_ports(self) -> dict:
+        if not self.connected or self._project is None:
+            return {"status": "offline"}
+        try:
+            model = self._project.model3d
+            count = model.Solver.GetNumberOfPorts()
+            if not 0 <= count <= 10000:
+                raise ValueError("Invalid port iteration count")
+            tree = model.get_tree_items(timeout=10)
+            numbers = sorted({int(match.group(1)) for item in tree if item.startswith("Ports\\")
+                              and (match := re.search(r"\\port(\d+)(?:\s|$)", item, re.IGNORECASE))})
+            ports = []
+            for number in numbers:
+                item = {"number": number}
+                try:
+                    data = model.DiscretePort.GetProperties(str(number))
+                    if len(data) == 8 and data[0]:
+                        item.update(dict(zip(("type", "impedance", "current", "voltage",
+                                             "voltage_impedance", "radius", "monitor"), data[1:])))
+                    else:
+                        item["properties_status"] = "not_discrete_or_unavailable"
+                except Exception as exc:
+                    item.update(properties_status="unavailable", detail=str(exc))
+                ports.append(item)
+            return {"status": "ok" if len(numbers) == count else "partial",
+                    "project": self._project_path, "count": count, "ports": ports,
+                    "listed_count": len(numbers), "enumeration_source": "actual project tree"}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
@@ -971,12 +1072,16 @@ class CSTClient:
         """Get current client status."""
         return {
             "mode": self.mode,
+            "owned_environment": self._owns_environment,
+            "pid": self._de.pid() if self._de is not None else None,
             "cst_available": CST_AVAILABLE,
             "cst_path": self._config.cst_path,
             "cst_version": self._config.version,
             "work_dir": self._config.work_dir,
             "project_open": self.has_project,
             "project_path": self._project_path,
+            "owned_environment": self._owns_environment,
+            "pid": self._de.pid() if self._de is not None else None,
             "dialog_watcher": (
                 CSTClient._dialog_watcher is not None
                 and CSTClient._dialog_watcher.running

@@ -59,10 +59,18 @@ class ToolRegistry:
         for tool in tools:
             self._tools.append(tool)
             # Bind *client* at registration time so each call gets the right ref
-            self._handlers[tool.name] = cast(
-                ToolHandler,
-                lambda name, args, _h=handle_fn, _c=client: _h(name, args, _c),
-            )
+            async def guarded(name, args, _h=handle_fn, _c=client):
+                if getattr(_c, "_task_job", None) and name not in (
+                    "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status"
+                ):
+                    from mcp_cst_studio.task_runner import task_status, TERMINAL
+                    state = task_status(_c)
+                    if state["state"] not in TERMINAL:
+                        return [TextContent(type="text", text=json.dumps({"status": "error",
+                            "message": "Schematic task owns the project; only status/stop is available",
+                            "job_id": state["job_id"]}))]
+                return await _h(name, args, _c)
+            self._handlers[tool.name] = guarded
 
     # -- internal: wire into the MCP server --
 

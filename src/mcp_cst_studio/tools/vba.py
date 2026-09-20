@@ -28,7 +28,9 @@ TOOLS: list[Tool] = [
     Tool(
         name="cst_execute_vba",
         description=(
-            "Execute raw VBA code in CST Studio Suite. The code is validated for "
+            "Execute raw VBA code in the CST 3D model only. For schematic Block/Net/Task use "
+            "cst_schematic_call; 3D failures are never replayed in the schematic. "
+            "For a 3D discrete port use cst_delete_port. The code is validated for "
             "safety (shell access, file I/O, and external process execution are "
             "blocked). In connected mode the code runs directly; in offline mode "
             "the validated script is returned for manual execution."

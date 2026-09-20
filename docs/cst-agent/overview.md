@@ -11,7 +11,7 @@
 - 开发分支：`feat/cst-agent-case-reproduction`，来自最新文档提交 `5a0a00456acdbe740c43313de344cea25118bdfe`；原业务工作区及原文档 worktree 的未提交文件已复制保护。
 - [案例进度、标准与测试记录](delivery-evidence.md)：完整交付仍未验收。222 已做当前保存文件的真实读取；偶极子旧副本首次求解失败，补入官方几何后第二次真实求解成功。
 - [问题、修复与复测](pitfalls.md)：保留失败，不把历史缓存归因本轮。
-- 当前实现继续复用 CSTClient、ToolRegistry、原工具、Pi CLI 和 PiDeck。真实 Agent 测试进行中；完整可视化、联合任务取消、222 新 V/I、独立数值比较仍需完成。
+- 当前实现继续复用 CSTClient、ToolRegistry、原工具、Pi CLI 和 PiDeck。真实 Agent 测试进行中；模型/网络/曲线视图与受控取消已有实测；222 新 V/I、完整实际Agent流程与独立数值比较仍需完成。
 
 ## 1. 我们最终要做什么
 

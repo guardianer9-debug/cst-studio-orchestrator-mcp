@@ -970,6 +970,9 @@ async def handle(name: str, arguments: dict, client: CSTClient) -> list[TextCont
         return _text({"status": "error", "message": f"Unknown parameter tool: {name}"})
 
     try:
+        if client.connected and name == "cst_set_parameter":
+            parameter = validate_name(arguments["name"], "parameter name")
+            return _text(client.set_parameter(parameter, arguments["value"], arguments.get("description")))
         if client.connected and name in ("cst_get_parameter", "cst_list_parameters"):
             parameter = arguments.get("name") if name == "cst_get_parameter" else None
             if parameter is not None:

@@ -501,10 +501,9 @@ def _handle_impl(name: str, arguments: dict, client: CSTClient) -> list[TextCont
         tree_path = arguments.get("tree_path", "")
 
         if client.connected:
-            # In connected mode, use VBA to query the actual tree
-            vba = _build_tree_vba(tree_path or None)
-            result = client.execute_vba(vba)
-            return _text(result)
+            items = client._project.model3d.get_tree_items(timeout=10)
+            return _text({"status": "ok", "project": client.project_path,
+                          "items": [item for item in items if not tree_path or item.startswith(tree_path)]})
 
         # Offline mode: return known default tree items and a VBA script
         items = _DEFAULT_TREE_ITEMS.get(tree_path, [])

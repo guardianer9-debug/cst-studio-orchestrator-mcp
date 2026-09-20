@@ -624,6 +624,9 @@ async def _handle_floquet_port(
 async def _handle_list_ports(
     arguments: dict, client: CSTClient
 ) -> list[TextContent]:
+    if client.connected:
+        result = client.list_ports()
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
     # Build VBA that queries port count — CST returns results via execute_vba
     vba_code = (
         'Dim n As Long\n'
@@ -652,9 +655,7 @@ async def _handle_delete_port(
 
     vba = (
         VBABuilder("Port")
-        .call("Reset")
-        .set_number("PortNumber", port_number)
-        .call("Delete")
+        .call_with_args("Delete", str(port_number))
     )
     script = vba.build()
     result = client.execute_vba(script)

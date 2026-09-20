@@ -252,6 +252,9 @@ TOOLS: list[Tool] = [
             "generic bridge for CST schematic RemoteObjects: it invokes "
             "project.schematic.<object_name>.<method_name>(*args, **kwargs). "
             "Use the specialized tools for common RLC/port/net operations when possible."
+            " Supply target_name to select a named object atomically; Delete requires it. "
+            "Block.Delete deletes the entire block, not one port. Use cst_delete_port for a 3D port. "
+            "Use cst_run_task for SimulationTask.Update."
         ),
         inputSchema={
             "type": "object",
@@ -274,6 +277,7 @@ TOOLS: list[Tool] = [
                     "description": "Keyword arguments passed to the CST method.",
                     "default": {},
                 },
+                "target_name": {"type": "string", "description": "Existing Block/CircuitProbe/SimulationTask/ExternalPort name selected immediately before the method call."},
             },
             "required": ["object_name", "method_name"],
         },
@@ -689,6 +693,7 @@ def _handle_call(args: dict, client: CSTClient) -> dict:
         method_name=str(args.get("method_name", "")),
         args=args.get("args", []),
         kwargs=args.get("kwargs", {}),
+        target_name=args.get("target_name"),
     )
 
 

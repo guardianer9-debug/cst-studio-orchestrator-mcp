@@ -217,7 +217,7 @@ TOOLS: list[Tool] = [
     Tool(
         name="cst_list_results",
         description=(
-            "List all available results in the CST result tree. Optionally "
+            "List available 0D/1D results in one explicit 3D or schematic domain. For full model/farfield tree use cst_project_tree. Optionally "
             "specify a subtree path to narrow the listing. Useful for "
             "discovering what simulation results are available before "
             "extracting specific data."
@@ -225,6 +225,7 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
+                "domain": {"type": "string", "enum": ["3d", "schematic"], "default": "3d"},
                 "tree_path": {
                     "type": "string",
                     "description": (
@@ -2266,7 +2267,9 @@ async def _handle_impl(name: str, arguments: dict, client: CSTClient) -> list[Te
         tree_path = arguments.get("tree_path")  # type: ignore[assignment]
 
         if client.connected:
-            result = client.list_results()
+            result = client.list_results(arguments.get("domain", "3d"))
+            if tree_path and result.get("status") == "ok":
+                result["items"] = [item for item in result["items"] if item.startswith(tree_path)]
             result["tree_path"] = tree_path or "(all result categories)"
             return _text(result)
 

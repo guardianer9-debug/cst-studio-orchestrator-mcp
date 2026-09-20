@@ -508,6 +508,11 @@ class TestParametersConnected:
     @pytest.mark.asyncio
     async def test_set_parameter(self, mock_client: CSTClient):
         from mcp_cst_studio.tools.parameters import handle
+        model = mock_client._project.model3d
+        model.GetNumberOfParameters.return_value = 1
+        model.GetParameterName.return_value = "patch_length"
+        model.GetParameterSValue.return_value = "30.0"
+        model.GetParameterNValue.return_value = 30.0
 
         result = await handle(
             "cst_set_parameter",
@@ -648,7 +653,7 @@ class TestVBAConnected:
 
         result = await handle(
             "cst_execute_vba",
-            {"code": "MsgBox \"Hello\""},
+            {"code": "StoreParameter \"probe\", \"1\""},
             mock_client,
         )
         data = _parse(result)

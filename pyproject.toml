@@ -48,6 +48,7 @@ Repository = "https://github.com/guardianer9-debug/cst-studio-orchestrator-mcp"
 Issues = "https://github.com/guardianer9-debug/cst-studio-orchestrator-mcp/issues"
 
 [project.optional-dependencies]
+live = ["psutil>=5.9"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",

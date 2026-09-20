@@ -36,3 +36,34 @@ Pi CLI 0.85.1；模型 luchigpt / gpt-5.6-terra / xhigh；MCP SDK 1.28.1；CST �
 当前可用：接口缺陷与修复证据、参考完整性负结果、方法版本与自动化执行日志。不能据此主张智能体优于人工、数值准确率、全 CST 覆盖或论文新颖性。正式对比实验需要冻结方案、指标、参考、重复次数和数据分割，另行登记；不自动扩展研究路线。
 
 证据完整性说明：早期临时探测保存了脚本、参考哈希和逐调用日志，但未在每次探测启动时冻结所有依赖源码校验，精确加载版本为“未取得”；不得用事后磁盘版本追认。后续 MCP 启动保存实现文件校验。第一次偶极子脚本的 flow_completed 标记仅表示脚本走到末尾，追加 assessment 明确其求解 FAIL，原收据保留。
+
+
+## D2 增量（2026-09-21）
+
+完整产品交付仍在进行，未标人工验收通过。
+
+| ID | 层级/内容 | 实际结论 |
+|---|---|---|
+| STARTUP-ENV-01/02 | 真 CST 启动排查 | 调整 Python 环境未解决，仅 hide 仍连接失败；失败空实例单独清理 |
+| STARTUP-QUIET-03 | 真 CST 启动复测 | 启动参数同时 hide+quiet，2.46 秒建立连接；之后多次复用成功。具体阻塞对话原因未取得，不编造 |
+| PI222-03/03B | 实际 Pi/PiDeck 修改 | 天线、port3 和专属 GND3/net19 已移除；CSSCHEM1 两端口、两端50Ω与 Tran1 保留；中间工程和裁剪工程分别保存 |
+| PI222-03B 干预 | 开发者辅助提示 | 开发者给出的 DiscretePort.Delete 提示仍不正确；Pi 后续使用 Port.Delete 成功。不能记为完全无辅助自主完成 |
+| PI222-04/04B | 实际 Agent | Provider internal_server_error/upstream_error 中断；没有本轮新求解，不计 CST 算法失败 |
+| IRRADIATION-TASK-01 | 真 CST 原理图任务负例 | 官方照射例实际是 AC1；指定 Tran1 被拒绝，未自动创建替代任务 |
+| IRRADIATION-TASK-02 | 真任务取消 | AC1 执行中请求停止，原生停止未及时完成；15 秒后仅终止自有进程树，确认无残留目标进程。标 terminated，不称原生 DS cancellation |
+| DIPOLE-INTEGRATED-03 | 真 CST 参数/求解 | L=82 与 L=80 的实际几何边界核对通过，两个工程保留；新求解 RUNNING→SUCCESS，S11 有1001点。首次远场提取选择错树项而失败，保留负结果 |
+| FARFIELD-READ-04/05 | 真 CST 后处理 | 04误选嵌套 Farfield Cuts；05选 Farfields 下一层3D结果成功。没有为修复读取问题重跑求解 |
+| PROTOCOL-LIVE-02 | 真 MCP stdio+真 CST | 新运行03的 S11、0.81GHz两个37点方向性切面、四个实体CAD快照成功；最大方向性约2.126/2.192dBi。原始数组留本地 |
+| DIPOLE-VIEW-01 / CAD-API-02/05 | CAD负例与修复 | 直接STL.Write缺形状名；无参数/错误参数尝试均留档。固定导出配方通过本机私有无历史入口完成，历史哈希未变，逐实体包围盒与单位吻合 |
+| PI-DIPOLE-01 / PI222-05 | 实际 Agent 暴露旧接口缺陷 | cst_list_ports 中 MsgBox 阻塞；cst_get_mesh_info 调用了Mesh.Update；相应查询不能记作只读成功。仅清理归属和创建时间已核实的测试CST实例 |
+| READ-FIXES-01/02 | 真 CST 只读复测 | 原生端口迭代未暴露，改为实际树中编号+原生端口属性；02端口数2、网格0、solver/frequency、三处场探针与两处电路探针读取通过；历史未变、网格仍0 |
+| MANAGED-DIPOLE-01 | 真 CST 受控3D运行 | 同一任务监督模块完成3D求解，state=succeeded，峰值自有进程树RSS约0.62GiB；独立数值验证未通过标记 |
+| UI-VIEW-02/03 | 实际 PiDeck webview | 已取得实际页面DOM和原生webview截图，模型来自四个CST导出实体，曲线来自新运行数据；Playwright主窗口截图不包含guest合成层，不能用白色截图否定实际guest内容 |
+| OFFLINE-08/09/10 | 离线回归 | 分别554/564/564通过 |
+| OFFLINE-11/12 | 离线回归负例 | 各1失败：旧参数Mock无新读回值、旧MsgBox成功断言；修正fixture/新行为，未放宽正确性要求 |
+| OFFLINE-13/14 | 当前离线回归 | 570通过 |
+| PI-DIPOLE-02 / PI222-06 | 实际 Agent 新尝试 | 持续执行中，终态待登记；原失败均保留 |
+
+D2 的运行框架沿用原 CSTClient/MCP：3D 与 DS 共用一个小型进程监督模块，无新队列平台。每个作业冻结 runner.py、PID+创建时间、工程、任务、时间/RSS预算、执行日志和终态；MCP/PiDeck 停止按钮写同一取消收据。父进程不在执行期间调用阻塞的 CST 接口。原生停止不成立时明确显示自有进程树终止，不把 Provider 停止当 CST 停止。
+
+公开材料不含工程、官方完整宏/帮助、原始聊天或个人绝对路径。以上均属于工程开发验证；尚未构成独立论文对比实验。

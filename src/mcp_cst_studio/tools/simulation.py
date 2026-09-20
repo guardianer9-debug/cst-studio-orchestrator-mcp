@@ -201,8 +201,11 @@ def _handle_run_simulation(
 
     if client.connected:
         if solver_type is not None:
-            return [TextContent(type="text", text=json.dumps({"status": "error",
-                "message": "Configure the solver explicitly before starting; omit solver_type."}))]
+            selected = client._project.model3d.get_active_solver_name(timeout=10)
+            if selected not in (solver_type, "HF " + solver_type):
+                return [TextContent(type="text", text=json.dumps({"status": "error",
+                    "message": "Requested solver differs from the configured solver; configure it explicitly first.",
+                    "configured_solver": selected}))]
         result = client.solver_command("start") if async_mode else client.run_solver()
     else:
         vba_code = _build_solver_start_vba(solver_type)

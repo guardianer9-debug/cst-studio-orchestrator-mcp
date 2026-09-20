@@ -13,7 +13,7 @@ def record(event: dict) -> None:
         return
     root = Path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    payload = {"timestamp": time.time(), **event}
+    payload = {"timestamp": time.time(), "server_pid": os.getpid(), **event}
     path = root / f"{time.time_ns()}-{uuid.uuid4().hex}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 

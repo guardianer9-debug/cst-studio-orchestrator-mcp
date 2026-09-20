@@ -22,7 +22,7 @@
 
 - **用户确认**：本次讨论明确的需求与方向，作为设计输入。
 - **源码核验**：固定远端提交可确认的实现；不代表已连接真实 CST 验证。
-- **本地差异核验**：当前未提交增强的源码/测试，与远端实现分开登记；本轮不将其提交。
+- **本地差异核验**：当前未提交增强的源码/测试，与远端实现分开登记；R1轮未将其提交；D1已在独立开发分支保护、整合并提交。
 - **既有原始证据**：本轮只读核对的历史日志、工程和验收收据；注明生成时间、归属与结论边界，不等同本轮重跑。
 - **设计提案**：拟实现的结构、契约、策略和验收条件，等待审查。
 - **待验证**：官方接口适用性、版本兼容、性能和物理结果等尚未核实事项。
@@ -564,7 +564,7 @@ P1B失败时继续定位和修复，不把建模读回完成当作整个任务�
 | `tools/geometry.py`、`boolean.py`、`ports.py`、`boundaries.py` | 对照222有效结构重建孔缝腔体、线缆端口及平面波；排除天线和port3及相关引用 | 不盲重放含旧导入/删除实体/天线的全部History；按核准物理对象建立映射 |
 | `tools/solvers.py`、`mesh.py`、`schematic.py`及本地增强 | 复用用户波形、线缆设置、RLC/Net、探针与task配方，补当前参考条件读回 | 波形/单位/路径、Create与Update副作用分开；不能拿旧默认值代替222规格 |
 | `tools/simulation.py`、`results.py`、`dialog_handler.py` | P1B起收敛作业路径、域结果适配、绑定实例的弹窗策略 | 不以线程包装代替取消验证；不默认清除唯一历史结果 |
-| `tools/__init__.py`及原测试目录 | 渐进错误/结构化输出兼容，沿用测试框架 | 根CLAUDE的旧约定/计数后续同实现PR更新，本轮不改 |
+| `tools/__init__.py`及原测试目录 | 渐进错误/结构化输出兼容，沿用测试框架 | 计数与当前实现同步更新；工具存在不表示实机验证通过 |
 | 现有测试与案例证据目录 | 增加C0-ENC-222/官方例的完整建模—配置—运行—结果断言；小砖/RLC按需作为局部失败复测 | 整例未贯通就持续定位；不以接口烟测通过宣称产品完成，不公开私有基准工程 |
 | 独立CST桌面checkout的`desktop/src/main/pi/PiProcess.ts`及AgentManager接点 | 复用CLI RPC/cwd/会话；CST专用环境、服务端点和主进程桥接 | 不带入FDTD端点默认值，不改FDTD生产checkout |
 | 独立桌面的`features/cst`、CST共享类型/接口 | 借鉴`FdtdModelViewer.tsx`、`useFdtdScopedRequestGate.ts`、`CodeFirstResultsPanel.tsx`的相机、过期门、曲线/报告交互 | 现组件直接依赖`shared/fdtd`、primitive和FDTD API，不能直接换标签即用；只抽有真实复用价值的小函数 |
@@ -584,6 +584,15 @@ P1B失败时继续定位和修复，不把建模读回完成当作整个任务�
 - 独立 PiDeck 以官方 v0.7.1 提交 `1979f98d7cab86bd627c1c386f954ae5e0e64fdd` 构建；当前 Pi CLI 0.85.1，项目级 MCP adapter 2.34.0，独立 userData。未修改 FDTD checkout，未升级全局 Pi。桌面通过既有 RPC 控制 Pi；第一阶段只由 Pi 调用 MCP，后续视图消费同一后端产生的实际快照/结果，不另开竞争写会话。
 
 当前离线检查与真实运行结论详见 [delivery-evidence.md](delivery-evidence.md)。完整 222、实际 Agent 修改/追问/求解、PiDeck 三维/原理图/结果视图和用户人工核对仍是完成条件，内部检查通过不关闭交付。
+
+### 15.2 D2 实际运行与显示接口
+
+- 3D异步运行和DS任务统一复用 `task_runner.py`；worker执行官方3D run_solver或选定SimulationTask.Update，MCP线程读持久状态。自有PID及创建时间是强制边界，runner与输入在每次作业内冻结；默认限制3600秒/24GiB，不能在失败后静默改变物理模型。
+- `viewer.py`提供loopback工程快照、实际CAD、原理图派生布局和原始曲线展示，嵌入原PiDeck内置浏览器。无第二个CST连接；停止按钮与MCP调用同一个取消收据函数，不依赖Provider。PiDeck本身的“停止Agent”仍不同于“停止仿真”。
+- `cst_publish_view`保存独立工程、读取当前状态、逐实体导出STL并核对实际bbox/单位和History不变。仅当前CST2025.2 build启用私有无历史执行入口。导出表面不是求解网格。
+- `cst_read_curve`按3D/DS域保存完整x/实/虚数组，响应只给摘要；`cst_read_farfield_cut`限定3D远场树项，输出线性方向性与角度。S参数幅度用20log10，方向性比值用10log10，不能混用。
+- 已替换端口、参数、网格、solver与项目树的关键伪查询。端口编号来自实际树，探针使用自身坐标系与位置分量；未取得指标不写0。原理图Delete需target_name，同一调用内选中目标再执行。
+- 原型、Mock、协议、真实CST、真实Agent和人工验收分层保留。当前Agent还在持续复测，任何截图或内部成功运行都不能替代完整用户闭环。
 
 ## 16. 风险、未知项与取舍
 
