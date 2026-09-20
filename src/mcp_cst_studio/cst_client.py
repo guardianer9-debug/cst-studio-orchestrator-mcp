@@ -247,6 +247,8 @@ class CSTClient:
                     "message": "VBA generated; no CST execution occurred."}
         if re.search(r"\b(?:MsgBox|InputBox)\b", vba_code, re.IGNORECASE):
             return {"status": "error", "message": "Interactive VBA prompts are disabled; use structured readback tools."}
+        if re.search(r"\b(?:FarfieldPlot|ASCIIExport)\b", vba_code, re.IGNORECASE):
+            return {"status": "error", "message": "Postprocessing must not enter model history and invalidate meshes. Use cst_read_curve, cst_read_farfield_cut or cst_publish_view."}
         try:
             model = self._project.model3d
             if model is None:
@@ -903,11 +905,8 @@ class CSTClient:
         try:
             self._project.model3d.DeleteResults()
         except Exception as e:
-            logger.warning("DeleteResults error (non-fatal): %s", e)
-
-        # Dismiss any dialogs that may have appeared
-        dismissed = self.dismiss_dialogs()
-        return {"status": "ok", "method": "python_api", **dismissed}
+            return {"status": "error", "message": str(e), "partial_execution_possible": True}
+        return {"status": "ok", "method": "python_api", "domain": "3d"}
 
     def set_params_rebuild_solve(
         self,
@@ -988,7 +987,9 @@ class CSTClient:
         if not self.connected or self._project is None:
             return {"status": "offline", "message": "Requires connected mode."}
 
-        info["solver_running"] = self.is_solver_running()
+        state = self.solver_status()
+        info["solver_running"] = state.get("running")
+        info["operation"] = state
         info["project_path"] = self._project_path
 
         if not self._project_path:
@@ -999,6 +1000,7 @@ class CSTClient:
         project_base = self._project_path.replace(".cst", "")
         candidate_dirs = [
             os.path.join(project_base, "Result"),
+            os.path.join(project_base, "Result", "DS"),
             project_base,
         ]
 

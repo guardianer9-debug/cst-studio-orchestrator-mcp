@@ -15,6 +15,7 @@ from mcp.types import TextContent, Tool
 
 from mcp_cst_studio.cst_client import CSTClient
 from mcp_cst_studio.vba_builder import VBABuilder
+from mcp_cst_studio.config import CSTConfig
 
 
 TOOLS = [
@@ -48,8 +49,8 @@ TOOLS = [
         "if the task remains blocked after 15 seconds, only its owned CST process tree is terminated, "
         "preserving the saved copy and partial evidence. This is not a claim of native DS cancellation."),
         inputSchema={"type": "object", "properties": {
-            "task": {"type": "string"}, "max_seconds": {"type": "integer", "minimum": 10, "maximum": 3600, "default": 3600},
-            "max_rss_gb": {"type": "number", "minimum": 1, "maximum": 24, "default": 24}},
+            "task": {"type": "string"}, "max_seconds": {"type": "integer", "minimum": 10, "maximum": CSTConfig.from_env().max_run_seconds},
+            "max_rss_gb": {"type": "number", "minimum": 1, "maximum": CSTConfig.from_env().max_run_rss_gb}},
             "required": ["task"], "additionalProperties": False}),
     Tool(name="cst_read_farfield_cut", description=(
         "Read a real 3D farfield's directivity versus theta at a fixed phi. Select an exact "
@@ -325,11 +326,16 @@ def read_farfield_cut(client: CSTClient, tree_path: str, phi: float = 0, step_de
         raise ValueError("Farfield plot setup has not been validated on this CST build")
     if not model.SelectTreeItem(tree_path):
         raise ValueError("CST rejected the farfield selection")
-    code = (VBABuilder("FarfieldPlot").set("SetPlotMode", "directivity")
-            .set_bool("SetScaleLinear", True).call("Plot").build())
-    model._execute_vba_code("Sub Main()\n" + code + "\nEnd Sub", timeout=30)
     angles = [i * step_degrees for i in range(int(180 / step_degrees) + 1)]
-    values = [model.FarfieldPlot.CalculatePoint(t, phi, "spherical abs", tree_path) for t in angles]
+    builder = (VBABuilder("FarfieldPlot").call("Reset").set("SetPlotMode", "directivity")
+               .set_bool("SetScaleLinear", True).call("Plot"))
+    for theta in angles:
+        builder.call_with_args("AddListEvaluationPoint", str(theta), str(phi), "0", "spherical", "", "0")
+    builder.call_with_args("CalculateList", "")
+    model._execute_vba_code("Sub Main()\n" + builder.build() + "\nEnd Sub", timeout=30)
+    values = list(model.FarfieldPlot.GetList("spherical abs"))
+    if len(values) != len(angles):
+        raise ValueError("Farfield result count does not match requested angles")
     if not all(math.isfinite(v) and v >= 0 for v in values):
         raise ValueError("Farfield returned non-finite or negative linear directivity")
     curve = {"status": "ok", "project": client.project_path, "domain": "3d",

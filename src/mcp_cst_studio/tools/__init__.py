@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import json
 import uuid
+import asyncio
 from typing import TYPE_CHECKING, Awaitable, Callable, cast
 
 from mcp.types import TextContent, Tool
@@ -61,7 +62,7 @@ class ToolRegistry:
             # Bind *client* at registration time so each call gets the right ref
             async def guarded(name, args, _h=handle_fn, _c=client):
                 if getattr(_c, "_task_job", None) and name not in (
-                    "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status"
+                    "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status", "cst_read_project_log"
                 ):
                     from mcp_cst_studio.task_runner import task_status, TERMINAL
                     state = task_status(_c)
@@ -78,6 +79,7 @@ class ToolRegistry:
         """Create the ``list_tools`` / ``call_tool`` MCP handlers."""
         tools = list(self._tools)
         handlers = dict(self._handlers)
+        execution_lock = asyncio.Lock()
 
         @server.list_tools()
         async def _list_tools() -> list[Tool]:
@@ -93,7 +95,10 @@ class ToolRegistry:
             call_id = uuid.uuid4().hex
             record({"event": "tool_start", "call_id": call_id, "tool": name, "arguments": arguments})
             try:
-                result = await handler(name, arguments)
+                # CST remote objects keep selection/plot state. Each tool must
+                # finish before another request can change that state.
+                async with execution_lock:
+                    result = await handler(name, arguments)
             except BaseException as exc:
                 record({"event": "tool_exception", "call_id": call_id,
                         "error": type(exc).__name__, "message": str(exc)})

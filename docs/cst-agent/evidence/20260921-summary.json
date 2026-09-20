@@ -1,0 +1,54 @@
+{
+  "record_type": "engineering_development_not_formal_paper_experiment",
+  "versions": {
+    "CST": "2025.2 (2024-12-16)",
+    "Pi": "0.85.1",
+    "PiDeck": "0.7.1",
+    "MCP_SDK": "1.28.1",
+    "adapter": "2.34.0",
+    "model": "luchigpt/gpt-5.6-terra",
+    "thinking": "xhigh"
+  },
+  "dipole": {
+    "actual_agent_workflow": "passed_with_recorded_developer_repairs_and_retries",
+    "reproduction_kind": {
+      "parameter_roundtrip_attempt_02": "modified_variant",
+      "final_attempt_03": "reference_operation",
+      "complete_from_scratch_rebuild": "not_demonstrated"
+    },
+    "geometry_objects": 4,
+    "s11_points": 1001,
+    "farfield_cut_points_each": 181,
+    "phi_degrees": [
+      0,
+      90
+    ],
+    "history_unchanged_during_CAD_export": true,
+    "cad_bounds_check": "pass",
+    "repeatability_s11_max_abs_difference": 0.0,
+    "independent_numerical_validation": "pending",
+    "human_acceptance": "pending",
+    "final_narration": "provider_error_after_artifacts_completed",
+    "s11_min_db": -16.554734273840044,
+    "s11_min_frequency_GHz": 0.8025000095367432
+  },
+  "cavity_cable": {
+    "preparation_and_load_roundtrip": "actual_agent_pass",
+    "original_reference_unchanged": true,
+    "run_state": "terminated",
+    "stop_reason": "memory_limit",
+    "max_rss_gb": 24,
+    "observed_peak_rss_bytes": 27307069440,
+    "supervised_elapsed_seconds": 1105.7084331512451,
+    "termination_mode": "owned_process_tree",
+    "remaining_owned_processes": 0,
+    "new_complete_coupled_VI": "not_obtained",
+    "next_budget": "awaiting_user: 48 GiB / 6 h, system free memory floor 16 GiB"
+  },
+  "offline_tests": {
+    "passed": 575,
+    "failed": 0
+  },
+  "actual_billed_model_cost": null,
+  "evidence_storage": "private local evidence index; source projects, logs, screenshots and chats are not included here"
+}

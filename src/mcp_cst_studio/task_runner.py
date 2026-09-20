@@ -23,14 +23,18 @@ def write(path: Path, value: dict):
     temporary.replace(path)
 
 
-def start_task(client, task: str, max_seconds: int = 3600, max_rss_gb: float = 24, domain: str = "schematic") -> dict:
+def start_task(client, task: str, max_seconds: int | None = None, max_rss_gb: float | None = None, domain: str = "schematic") -> dict:
     import psutil
     if not client._owns_environment or not client.has_project:
         raise ValueError("Task execution requires an owned CST instance and an open working copy")
     if getattr(client, "_task_job", None) and task_status(client)["state"] not in TERMINAL:
         raise ValueError("A schematic task is already active")
-    if not 10 <= max_seconds <= 3600 or not 1 <= max_rss_gb <= 24:
-        raise ValueError("Current limits: 10–3600 seconds, 1–24 GiB RSS")
+    seconds_limit = getattr(client._config, "max_run_seconds", 3600)
+    rss_limit = getattr(client._config, "max_run_rss_gb", 24)
+    max_seconds = max_seconds if max_seconds is not None else seconds_limit
+    max_rss_gb = max_rss_gb if max_rss_gb is not None else rss_limit
+    if not 10 <= max_seconds <= seconds_limit or not 1 <= max_rss_gb <= rss_limit:
+        raise ValueError(f"Configured limits: {seconds_limit} seconds, {rss_limit} GiB RSS")
     if domain not in ("3d", "schematic"):
         raise ValueError("Unknown execution domain")
     pid = client._de.pid()
@@ -43,6 +47,7 @@ def start_task(client, task: str, max_seconds: int = 3600, max_rss_gb: float = 2
     record = {"job_id": job.name, "domain": domain, "task": task,
               "project": client.project_path, "owned_pid": pid, "process_created": process.create_time(),
               "controller_pid": os.getpid(), "max_seconds": max_seconds, "max_rss_gb": max_rss_gb,
+              "min_system_free_gb": getattr(client._config, "min_system_free_gb", 16),
               "created_at": time.time(), "state": "queued", "human_acceptance": "pending",
               "numerical_acceptance": "pending"}
     write(job / "request.json", record)
@@ -109,13 +114,15 @@ def terminate_owned(request: dict) -> dict:
 
 
 def execute(job: Path, abort: bool = False):
-    import cst.interface as ci
     import psutil
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
     output = job / ("abort.json" if abort else "execution.json")
-    value = {"started_at": time.time(), "state": "executing"}
+    value = {"started_at": time.time(), "state": "executing", "phase": "loading_sdk"}
     write(output, value)
     try:
+        import cst.interface as ci
+        value["phase"] = "connecting"
+        write(output, value)
         if not same_process(request, psutil.Process(request["owned_pid"])):
             raise RuntimeError("CST process identity changed")
         de = ci.DesignEnvironment.connect(request["owned_pid"])
@@ -128,13 +135,19 @@ def execute(job: Path, abort: bool = False):
         else:
             value["messages_before"] = project.get_messages() or []
             if request["domain"] == "3d":
+                value["phase"] = "running_3d_solver"
+                write(output, value)
                 result = project.model3d.run_solver()
             else:
                 task = project.schematic.SimulationTask
                 task.Reset(); task.Name(request["task"])
                 if not task.DoesExist():
                     raise ValueError("Named task does not exist")
+                value["phase"] = "validating_task"
+                write(output, value)
                 task.ValidateSetup()
+                value["phase"] = "executing_task"
+                write(output, value)
                 result = task.Update()
             value["messages"] = project.get_messages() or []
             old = value["messages_before"]
@@ -156,7 +169,7 @@ def execute(job: Path, abort: bool = False):
 def supervise(job: Path):
     import psutil
     request = json.loads((job / "request.json").read_text(encoding="utf-8"))
-    record = dict(request, state="executing", started_at=time.time(), peak_rss_bytes=0)
+    record = dict(request, state="executing", started_at=time.time(), peak_rss_bytes=None)
     write(job / "status.json", record)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with (job / "executor.log").open("wb") as log:
@@ -176,12 +189,19 @@ def supervise(job: Path):
                     rss += process.memory_info().rss
                 except psutil.NoSuchProcess:
                     pass
-            record["peak_rss_bytes"] = max(record["peak_rss_bytes"], rss)
+            record["peak_rss_bytes"] = max(record["peak_rss_bytes"] or 0, rss)
+            execution_path = job / "execution.json"
+            if execution_path.exists():
+                record["phase"] = json.loads(execution_path.read_text(encoding="utf-8")).get("phase")
             reason = "user_stop" if (job / "cancel.json").exists() else None
             if time.time() - record["started_at"] > request["max_seconds"]:
                 reason = "time_limit"
             if rss > request["max_rss_gb"] * 1024 ** 3:
                 reason = "memory_limit"
+            available = psutil.virtual_memory().available
+            record["system_available_bytes"] = available
+            if available < request.get("min_system_free_gb", 16) * 1024 ** 3:
+                reason = "system_memory_floor"
             if reason and cancellation is None:
                 cancellation = time.time()
                 record.update(state="stopping", stop_reason=reason, stop_requested_at=cancellation)

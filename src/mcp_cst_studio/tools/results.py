@@ -1936,6 +1936,17 @@ async def _handle_impl(name: str, arguments: dict, client: CSTClient) -> list[Te
             result = client.get_result(tree_path)
             result["s_parameter"] = f"S{port_out},{port_in}"
             result["format"] = fmt
+            if result.get("status") == "ok" and fmt != "real_imag":
+                import math
+                data = result["data"]
+                pairs = list(zip(data["real"], data["imag"]))
+                if fmt == "phase":
+                    data["y"] = [math.degrees(math.atan2(imag, real)) for real, imag in pairs]
+                else:
+                    magnitudes = [math.hypot(real, imag) for real, imag in pairs]
+                    data["y"] = magnitudes if fmt == "mag" else [20 * math.log10(v) if v > 0 else None for v in magnitudes]
+                result["converted_representation"] = fmt
+                result["conversion_note"] = "Raw real/imaginary data retained; dB of exact zero is represented by null."
             result["tree_path"] = tree_path
             return _text(result)
 
@@ -2373,9 +2384,22 @@ async def _handle_impl(name: str, arguments: dict, client: CSTClient) -> list[Te
     # ------------------------------------------------------------------
     if name == "cst_get_result_summary":
         if client.connected:
-            vba = _build_result_summary_vba()
-            result = client.execute_vba(vba)
-            result["summary_type"] = "full"
+            import math
+            result = client.list_results("3d")
+            if result.get("status") == "ok":
+                path = "1D Results\\S-Parameters\\S1,1"
+                if path in result["items"]:
+                    curve = client.get_result(path)
+                    if curve.get("status") == "ok":
+                        data = curve["data"]
+                        magnitudes = [math.hypot(a, b) for a, b in zip(data["real"], data["imag"])]
+                        if magnitudes:
+                            i = min(range(len(magnitudes)), key=magnitudes.__getitem__)
+                            result["s11"] = {"minimum_db": 20 * math.log10(magnitudes[i]) if magnitudes[i] > 0 else None,
+                                             "frequency": data["x"][i], "x_label": curve["xlabel"], "points": len(magnitudes)}
+                    else:
+                        result["s11_error"] = curve["message"]
+            result["summary_type"] = "available_1d_data"
             return _text(result)
 
         vba = _build_result_summary_vba()
