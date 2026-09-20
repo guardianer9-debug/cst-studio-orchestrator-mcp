@@ -1,14 +1,56 @@
 # CST Agent 功能覆盖与验收矩阵
 
-版本：0.1.0 / R0；日期：2026-09-20；状态：**种子清单，待 Codex 核验与补全**。
+版本：0.2.0 / R1；日期：2026-09-20；状态：**已做源码/本地帮助/既有证据审查，未做本轮实机验收**。
 
-本文件是[整体方案](architecture-and-delivery-plan.md)的范围与验收索引，不是现有功能支持清单。来源：用户本轮截图、确认需求、固定版本代码。截图只展示两个 Home 工具栏及部分标签名，不能据此推断下拉菜单和全部产品模块。
+本文件是[整体方案](architecture-and-delivery-plan.md)的范围与验收索引，不是“全部已支持”清单。R1保留R0的56个CAP编号及全部工具栏转录项；本次工作树和审查输入没有截图原件，因此只核对转录的内部完整性，原图对照仍待补。下拉菜单和其他标签细项不猜测。
 
 ## 1. 状态填写方式
 
 每个能力后续至少登记六个独立维度：API 依据、实际读取、实际写入、实机自动化、PiDeck 可用、物理/数值验证。各维度取 `unknown / code_only / pass / fail / partial / unsupported / not_applicable` 等明确值，并附证据。
 
-R0 默认：表中“源码线索”仅说明存在代码或候选入口；所有未另附原始证据的实机/UI/物理维度均为 **unknown**。不要为填满表把未知写成不支持，也不要把 tool 名称存在写成 PASS。
+以下原有表中的“源码线索”以远端提交 `14b7f89d28a15b8c64af5c511d95bce1307a60ea` 为基线。R1详细核验表覆盖P0/直接相关P1；未列入详细表的维度均为 **unknown**，非unsupported。全部CST-PiDeck和独立数值维度目前unknown；既有FDTD证据不能跨后端计分。
+
+证据简写：`R`=上述远端；`L1`=本地未提交增强；`H1/H2/H3`=CST2025本机Python/原理图/后台运行帮助；`E1–E4`=已读历史原始证据；`P1/P2`=本机版本与参考UI源码。完整定位见[主方案§18.4](architecture-and-delivery-plan.md#184-r1-本地只读核验登记)。`code_only`表示存在生成/调用代码，包含MsgBox等尚不能交付结构化读取的路径，不能读作“已可用”。
+
+### 1.1 P0/P1 实际覆盖与验收落点
+
+| 能力ID | 源码/本地增强与官方依据 | 读取 | 写入/执行 | 既有CST自动化证据 | PiDeck / 数值 | 最小验收与实施包 |
+|---|---|---|---|---|---|---|
+| CAP-001、102、312 | R `CSTClient.connect/new_project/open_project/save_project/disconnect`；H1；L1未解决绑定 | code_only：状态/路径；无完整快照 | code_only | partial E1：仅历史连接，未证明目标正确 | unknown / unknown | P1A明确PID/工程/归属、工厂不回退、detach不关闭；保存重开/双工程拒错 |
+| CAP-002、006 | P2会话、模型/参数/结果面板；没有CST业务桥接 | unknown（CST） | unknown（CST） | unknown | unknown / not_applicable | CST-2同一可见Pi两轮修改/当前值追问；参数依据不靠聊天记忆 |
+| CAP-003、303 | R `tools/import_export.py`导入/导出生成器、`project._build_export_vba`；文档解析并非本包已有管线 | code_only（文件接口）；对象映射unknown | code_only | unknown；工程文件存在不计运行 | unknown / unknown | 小CAD单位/部件/外部依赖读回；CST-2先本地可读文件，复杂STEP放CST-4 |
+| CAP-004 | R `vba._load_vba_reference`为仓库JSON；schematic成员枚举；H1/H2/H3本机帮助 | code_only；官方段落本轮人工核验 | not_applicable | unknown | unknown / not_applicable | P1A按需本机章节；缺API或许可不编造；不建向量库 |
+| CAP-005、115、219 | R `vba._handle_execute_vba`、`CSTClient.execute_vba/schematic_call`；H1/H2 | code_only（调用返回） | code_only（VBA/RemoteObject）；托管Python unknown | unknown | unknown / unknown | P1A显式域、部分失败不换域重放；原始Python后续可信模式，不以正则称沙箱 |
+| CAP-007、104、311 | R `server.run_server`启动即connect；simulation共用启动路径；H1/H3 | code_only；错误可能当False | code_only；真异步/取消unknown | E2历史真实失败；E3示例缓存不计 | unknown / unknown | P1A先no-connect与收据；P1B逐域停止验证；不得借协议测试启动CST |
+| CAP-101、109、112、113 | R `parameters.py`存储/重建，get为MsgBox/list为Debug.Print；CSTClient.status；H1 | code_only但不满足结构化表达式/值契约 | code_only | unknown | unknown / not_applicable | P1A真实单位、表达式/值、bbox/材料读回；默认不调用rebuild-and-solve组合 |
+| CAP-103、302 | R `solvers.py/ports.py/boundaries.py`；L1用户信号；H1 | code_only/部分字段unknown | code_only | unknown | unknown / unknown | P1B/CST-3区分配置与启动；端口模式/方向、波形文件依赖和结果元数据 |
+| CAP-107、108 | R `mesh.py`已有基础设置；L1增加全局/局部属性；实际网格导出未核 | code_only（信息生成器）；真实节点unknown | code_only（设置） | unknown | unknown / unknown | P1A不生成Mesh；后续比较设置与实际网格，三角面片不能代替；不是全CST网格通用导出器 |
+| CAP-110 | R `model3d.add_to_history`；本地官方宏参考 | code_only（记录/导航）；完整历史读回unknown | code_only | 示例/宏文件仅参考 | unknown / not_applicable | 区分3D History、原理图操作日志及非History命令；不拿History当完整恢复日志 |
+| CAP-114 | 参考PiDeck按需报告/下载；CST原生Report API未核 | unknown（CST报告） | unknown | unknown | unknown / not_applicable | CST-2/3生成版本绑定报告；下载/读取不调用模型或启动求解 |
+| CAP-201、207、214、304 | R `schematic_create_rlc/external_port`及Block属性；H2 | code_only：当前list未含完整属性/本地单位 | code_only | unknown | unknown / not_applicable | P1A补实际R/L/C值、单位、端口阻抗和引脚读回，不重做创建器 |
+| CAP-208 | 通用schematic/本地配方有Ground block思路；H2待核具体类型/签名 | unknown（参考节点语义） | code_only（配方），无专用已验封装 | unknown | unknown / not_applicable | P1A真实参考节点与网络连通；未取得读回时C0-SCH阻塞，不以图标替代 |
+| CAP-210、211、212、220 | R `schematic_connect/list`的Net.GetComponentPorts；H2；布局/剪贴待核 | code_only（block/net）；布局unknown | code_only（连接）；断开/布局unknown | unknown | unknown / not_applicable | P1A引脚级连接表；CST-2派生简图，真实布局/拖放后移，不把布局变化当拓扑变化 |
+| CAP-202、216 | L1 `schematic_create_transient_task`；H2 SimulationTask.Update执行含子任务、ValidateSetup只核设置 | code_only（返回所设值）；实际task属性读回unknown | code_only；原生DS取消unknown | E2联合失败，E3官方缓存不计当前成功 | unknown / unknown | P1A不执行Update；P1B查DS控制入口；独立RLC不沿用CSSCHEM1默认 |
+| CAP-209 | H2 circuitprobeobject；本地脚本有CircuitProbe配方 | unknown（完整观测契约） | code_only（配方） | unknown | unknown / unknown | P1B/CST-3先建网络再探针，核参考节点/正方向/实际DS结果 |
+| CAP-205、215、217 | R通用schematic可访问候选对象；完整依赖恢复未做 | unknown（全依赖） | unknown | unknown | unknown / unknown | P1A只自包含副本；CST-4显式依赖清单/缺失阻断，不声称一个.cst即全部 |
+| CAP-301 | R geometry/boolean/transforms/materials生成器 | code_only/对象级查询缺口 | code_only | 原生示例可参考，非MCP新验收 | unknown / unknown | C0-3D从零和重开副本，实物bbox/材料/关系与修订对应 |
+| CAP-305、306 | R CS/DS factory+VBA通道；L1联合前提诊断/任务；本地CableStudio配方 | partial code_only；全链映射unknown | code_only/配方 | E2证明曾启动且失败，不证明通过 | unknown / unknown | CST-4小线缆/腔体逐段核终端—网络—任务；不再从零写已有通道 |
+| CAP-307、308、309 | R `get_result`为get_3d+str；ASCII/Touchstone/远场导出；DS数值链未核 | code_only；结构化DS unknown | code_only（导出会覆盖/删除旧路径） | E3缓存和空摘要不可计本机PASS | unknown / unknown | CST-3逐run新目录；复数/轴/单位/参考面/方向/任务身份齐全，不以非空通过 |
+
+上表不是要求在P1A实现全部P0。P0是基础工作流优先级；具体首包范围以[主方案§14.1](architecture-and-delivery-plan.md#141-推荐第一个交付包cst-1p1a-双域绑定与读回)为准，P1B/CST-2/3承接其余基础项。
+
+### 1.2 未提交增强清单与版本
+
+静态声明计数：远端177、本地183；本地新增：
+
+- `cst_automation_guardrails`、`cst_cable_cosimulation_status`：`tools/diagnostics.py`。
+- `cst_set_mesh_properties`、`cst_set_local_mesh_properties`：`tools/mesh.py`。
+- `cst_schematic_create_transient_task`：`tools/schematic.py`及`cst_client.py`。
+- `cst_define_user_excitation_signal`：`tools/solvers.py`及`.usf`写入。
+
+以上全部为L1，尚未合入本分支。原理图创建RLC、ExternalPort、Net连接及通用调用原本就已在R中。测试差异与业务差异分开，不因有新增测试就填通过。
+
+本机帮助版本2025；历史失败日志为2025.2，示例缓存含2025 Beta；**当前运行build/许可证额度unknown**。CLI包0.85.1、参考Host SDK0.80.10、静态环境MCP SDK1.28.1分别记录；活动服务和窗口加载组合unknown。适配器2.34.0只核源码，实际安装/接入unknown。
 
 长期目标与首包优先级分开：P0 基础/双域闭环、P1 线缆和场路工作流、P2 广度扩展。P2 不是删除需求。
 
@@ -121,4 +163,4 @@ next_action:
 
 报告范围覆盖率时同时报告分母版本和未验证数量。某功能尚未找到 API，应写“未找到/待核验”，只有充分证据才写“不支持”；必要人工介入可保留，但不计全自动通过。
 
-Codex R1 应先细化 P0 和直接相关 P1，检查所有截图可见项有没有遗漏；可以重排建议优先级，但不能把 P2 项静默删掉。其他标签的完整清单应在获得其界面或官方目录后补充。
+R1已细化P0和直接相关P1，保留全部56项及P2范围。原截图未取得，所以“截图无遗漏”仍unknown；其他标签细项要取得对应界面或官方目录后补齐。本轮只做文档结构与来源核对，L0业务测试、L1服务协议、L2真实接口、L3Agent/桌面、L4数值均未新执行。
