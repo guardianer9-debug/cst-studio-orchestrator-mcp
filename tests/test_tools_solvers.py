@@ -90,6 +90,96 @@ async def test_get_solver_info(client: CSTClient):
 
 
 @pytest.mark.asyncio
+async def test_define_user_excitation_signal_returns_usf_and_timesignal_vba(client: CSTClient):
+    from mcp_cst_studio.tools.solvers import handle
+
+    hpm_usf = """
+Function ExcitationFunction(t As Double) As Double
+    If(t<10) Then
+        ExcitationFunction = 5000*t*Sin(2*pi*2.5*t)
+    ElseIf(t<60) Then
+        ExcitationFunction = 50000*Sin(2*pi*2.5*t)
+    ElseIf(t<70) Then
+        ExcitationFunction = 50000*(7-0.1*t)*Sin(2*pi*2.5*t)
+    Else
+        ExcitationFunction = 0
+    End If
+End Function
+""".strip()
+
+    result = await handle(
+        "cst_define_user_excitation_signal",
+        {
+            "name": "signal1",
+            "usf_code": hpm_usf,
+            "ttotal": 80,
+            "min_samples": 1000,
+            "set_as_reference": True,
+        },
+        client,
+    )
+
+    assert len(result) == 1
+    data = json.loads(result[0].text)
+    vba = data.get("vba", "")
+    assert data.get("status") == "offline"
+    assert data.get("signal_name") == "signal1"
+    assert data.get("usf_filename") == "signal1.usf"
+    assert data.get("usf_code") == hpm_usf
+    assert 'With TimeSignal' in vba
+    assert '.Name "signal1"' in vba
+    assert '.SignalType "User"' in vba
+    assert '.ProblemType "High Frequency"' in vba
+    assert '.Ttotal "80"' in vba
+    assert '.MinUserSignalSamples "1000"' in vba
+    assert '.Create' in vba
+    assert '.ExcitationSignalAsReference "signal1", "High Frequency"' in vba
+    assert data.get("write_location_hint") == r"Model\3D\signal1.usf"
+
+
+@pytest.mark.asyncio
+async def test_define_user_excitation_signal_requires_excitation_function(client: CSTClient):
+    from mcp_cst_studio.tools.solvers import handle
+
+    result = await handle(
+        "cst_define_user_excitation_signal",
+        {
+            "name": "signal1",
+            "usf_code": "Function OtherFunction(t As Double) As Double\nEnd Function",
+        },
+        client,
+    )
+
+    data = json.loads(result[0].text)
+    assert data.get("status") == "error"
+    assert "ExcitationFunction" in data.get("message", "")
+
+
+@pytest.mark.asyncio
+async def test_define_user_excitation_signal_rejects_real_main_program(client: CSTClient):
+    from mcp_cst_studio.tools.solvers import handle
+
+    result = await handle(
+        "cst_define_user_excitation_signal",
+        {
+            "name": "signal1",
+            "usf_code": (
+                "Function ExcitationFunction(t As Double) As Double\n"
+                "ExcitationFunction = 0\n"
+                "End Function\n"
+                "Sub Main()\n"
+                "End Sub"
+            ),
+        },
+        client,
+    )
+
+    data = json.loads(result[0].text)
+    assert data.get("status") == "error"
+    assert "Sub Main" in data.get("message", "")
+
+
+@pytest.mark.asyncio
 async def test_frequency_domain_f_min_gte_f_max_returns_error(client: CSTClient):
     from mcp_cst_studio.tools.solvers import handle
 

@@ -1,8 +1,23 @@
 # CST Agent 功能覆盖与验收矩阵
 
-版本：0.2.0 / R1；日期：2026-09-20；状态：**已做源码/本地帮助/既有证据审查，未做本轮实机验收**。
+版本：0.4.0 / D1；日期：2026-09-20；状态：**实际开发进行中；新增离线与真实 CST 证据，完整 Agent/人工验收未通过**。
+
+当前以222孔缝腔体线缆耦合及官方偶极子等已选案例完整复现为交付终点。P1A/P1B仅为内部技术检查点；砖/RLC不是产品终点。下表阶段标签表示实施依赖，不表示每到一个标签就暂停等用户继续。CAP-305/306/309中222所需子集提升为本批P0，通用扩展仍按P1处理。
 
 本文件是[整体方案](architecture-and-delivery-plan.md)的范围与验收索引，不是“全部已支持”清单。R1保留R0的56个CAP编号及全部工具栏转录项；本次工作树和审查输入没有截图原件，因此只核对转录的内部完整性，原图对照仍待补。下拉菜单和其他标签细项不猜测。
+
+## D1 增量状态（优先于下方 R1 历史基线）
+
+| 能力 | 当前证据 | 未完成 |
+|---|---|---|
+| 实例/工程归属与源保护 | Mock 回归；222 独立副本实读、源哈希不变 | 关闭 RPC 偶发阻塞已记录，需复测稳定性 |
+| 参数/3D/原理图/task 读回 | 222 实际表达式、bbox/材料、Net/Block、Tran1；属性签名修正 | 全字段读回复测、拓扑裁剪后一致性 |
+| 原生 3D 异步求解 | 偶极子第二次尝试实际 RUNNING→SUCCESS，新结果树 | 取消、数值比较、Agent 驱动重复运行 |
+| 曲线读取 | 本机结果库能返回新 S11 复数数组，MCP 正在接入 | 3D/DS 数据导出与 PiDeck 图表联验 |
+| 实际 Pi/PiDeck | 独立 PiDeck 已构建启动、RPC 会话与模型调用已开始 | 完整对话操作与图形验收 |
+| 222 新耦合 V/I | 未取得 | 参考变体、联合执行/取消与结果完整闭环 |
+
+证据索引：[测试与案例进度](delivery-evidence.md)，[踩坑记录](pitfalls.md)。以上均不是人工验收或论文数值对比结论。
 
 ## 1. 状态填写方式
 
@@ -30,14 +45,14 @@
 | CAP-201、207、214、304 | R `schematic_create_rlc/external_port`及Block属性；H2 | code_only：当前list未含完整属性/本地单位 | code_only | unknown | unknown / not_applicable | P1A补实际R/L/C值、单位、端口阻抗和引脚读回，不重做创建器 |
 | CAP-208 | 通用schematic/本地配方有Ground block思路；H2待核具体类型/签名 | unknown（参考节点语义） | code_only（配方），无专用已验封装 | unknown | unknown / not_applicable | P1A真实参考节点与网络连通；未取得读回时C0-SCH阻塞，不以图标替代 |
 | CAP-210、211、212、220 | R `schematic_connect/list`的Net.GetComponentPorts；H2；布局/剪贴待核 | code_only（block/net）；布局unknown | code_only（连接）；断开/布局unknown | unknown | unknown / not_applicable | P1A引脚级连接表；CST-2派生简图，真实布局/拖放后移，不把布局变化当拓扑变化 |
-| CAP-202、216 | L1 `schematic_create_transient_task`；H2 SimulationTask.Update执行含子任务、ValidateSetup只核设置 | code_only（返回所设值）；实际task属性读回unknown | code_only；原生DS取消unknown | E2联合失败，E3官方缓存不计当前成功 | unknown / unknown | P1A不执行Update；P1B查DS控制入口；独立RLC不沿用CSSCHEM1默认 |
+| CAP-202、216 | L1 `schematic_create_transient_task`；H2 SimulationTask.Update执行含子任务、ValidateSetup只核设置 | code_only（返回所设值）；实际task属性读回unknown | code_only；原生DS取消unknown | E2是另一派生工程失败，不能代替用户222基准 | unknown / unknown | 当前案例必须创建/设置/读回task；Update走获准运行控制门，不能当普通刷新；不以“只做RLC”为由遗漏 |
 | CAP-209 | H2 circuitprobeobject；本地脚本有CircuitProbe配方 | unknown（完整观测契约） | code_only（配方） | unknown | unknown / unknown | P1B/CST-3先建网络再探针，核参考节点/正方向/实际DS结果 |
 | CAP-205、215、217 | R通用schematic可访问候选对象；完整依赖恢复未做 | unknown（全依赖） | unknown | unknown | unknown / unknown | P1A只自包含副本；CST-4显式依赖清单/缺失阻断，不声称一个.cst即全部 |
 | CAP-301 | R geometry/boolean/transforms/materials生成器 | code_only/对象级查询缺口 | code_only | 原生示例可参考，非MCP新验收 | unknown / unknown | C0-3D从零和重开副本，实物bbox/材料/关系与修订对应 |
-| CAP-305、306 | R CS/DS factory+VBA通道；L1联合前提诊断/任务；本地CableStudio配方 | partial code_only；全链映射unknown | code_only/配方 | E2证明曾启动且失败，不证明通过 | unknown / unknown | CST-4小线缆/腔体逐段核终端—网络—任务；不再从零写已有通道 |
+| CAP-305、306 | R CS/DS factory+VBA通道；L1联合前提诊断/任务；本地CableStudio配方 | partial code_only；全链映射unknown | code_only/配方 | E2是派生失败；222用户确认成功及较早原始记录与当前容器版本须分开核准 | unknown / unknown | 222所需能力本批优先，逐段核线缆—终端—电阻接地/探针—任务；不推迟至CST-4，不从零写已有通道 |
 | CAP-307、308、309 | R `get_result`为get_3d+str；ASCII/Touchstone/远场导出；DS数值链未核 | code_only；结构化DS unknown | code_only（导出会覆盖/删除旧路径） | E3缓存和空摘要不可计本机PASS | unknown / unknown | CST-3逐run新目录；复数/轴/单位/参考面/方向/任务身份齐全，不以非空通过 |
 
-上表不是要求在P1A实现全部P0。P0是基础工作流优先级；具体首包范围以[主方案§14.1](architecture-and-delivery-plan.md#141-推荐第一个交付包cst-1p1a-双域绑定与读回)为准，P1B/CST-2/3承接其余基础项。
+P0按本批真实案例的必要能力逐步落实；按[主方案§14.1](architecture-and-delivery-plan.md#141-首批交付范围222耦合与官方算例完整复现)连续推进到模型、任务、运行、结果和产品交互验收，不以内部P1A/P1B通过关闭整批目标。
 
 ### 1.2 未提交增强清单与版本
 
@@ -52,7 +67,7 @@
 
 本机帮助版本2025；历史失败日志为2025.2，示例缓存含2025 Beta；**当前运行build/许可证额度unknown**。CLI包0.85.1、参考Host SDK0.80.10、静态环境MCP SDK1.28.1分别记录；活动服务和窗口加载组合unknown。适配器2.34.0只核源码，实际安装/接入unknown。
 
-长期目标与首包优先级分开：P0 基础/双域闭环、P1 线缆和场路工作流、P2 广度扩展。P2 不是删除需求。
+长期目标与本批优先级分开：P0基础与当前案例所需闭环，P1更广的线缆/场路扩展，P2广度扩展。P2不是删除需求；222所需能力不能因旧类别为P1而推迟。
 
 ## 2. 基础与 Agent
 
@@ -122,11 +137,11 @@
 | CAP-302 | 端口、激励、边界、监视器 | P0 | API 值、物理方向和几何位置均核验 |
 | CAP-303 | CAD/STEP 导入导出 | P1 | 单位、坐标、部件、映射与文件依赖正确 |
 | CAP-304 | 原理图元件与网络整体 | P0 | R/L/C/端口/参考节点/网络从零创建并读回 |
-| CAP-305 | 线缆截面/导体/路径/终端 | P1 | 结构、材料、回流、路径与终端对应 |
-| CAP-306 | Cable—电路—3D 联合任务 | P1 | 依赖、端口映射、任务执行与结果链闭合 |
+| CAP-305 | 线缆截面/导体/路径/终端 | P0本例/P1扩展 | 222所需结构、材料、回流、路径与终端对应 |
+| CAP-306 | Cable—电路—3D 联合任务 | P0本例/P1扩展 | 222依赖、端口映射、电阻接地/探针、任务执行与结果链闭合 |
 | CAP-307 | S 参数、阻抗与派生曲线 | P0 | 复数、轴、端口、参考阻抗及 run 身份 |
 | CAP-308 | 方向图与辐射指标 | P0 | 频率、角度、极化、坐标与指标定义明确 |
-| CAP-309 | 线缆电压、电流与串扰 | P1 | 导线/节点/探针/方向与近远端定义明确 |
+| CAP-309 | 线缆电压、电流与串扰 | P0本例/P1扩展 | 当前222及已选官方例的导线/节点/探针/方向与结果定义明确 |
 | CAP-310 | 场切片、动画和其他后处理 | P2 | 实际数据、单位、时频坐标；不伪造缺失场 |
 | CAP-311 | 隐藏窗口/后台执行 | P0分步 | 特定版本实例真实测试；未知弹窗可检测 |
 | CAP-312 | 多项目恢复、依赖与外部修改 | P0基础/P2扩展 | 不覆盖人工修改；重启重新绑定与同步 |

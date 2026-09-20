@@ -2266,8 +2266,7 @@ async def _handle_impl(name: str, arguments: dict, client: CSTClient) -> list[Te
         tree_path = arguments.get("tree_path")  # type: ignore[assignment]
 
         if client.connected:
-            vba = _build_list_results_vba(tree_path)
-            result = client.execute_vba(vba)
+            result = client.list_results()
             result["tree_path"] = tree_path or "(all result categories)"
             return _text(result)
 

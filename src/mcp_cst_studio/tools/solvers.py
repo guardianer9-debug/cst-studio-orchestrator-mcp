@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from mcp.server import Server
 from mcp.types import TextContent, Tool
@@ -11,10 +12,21 @@ from mcp_cst_studio.cst_client import CSTClient
 from mcp_cst_studio.types import ExcitationType
 from mcp_cst_studio.validators import (
     validate_enum_value,
+    validate_name,
     validate_positive,
     validate_range,
+    validate_vba_input,
 )
 from mcp_cst_studio.vba_builder import VBABuilder
+
+_EXCITATION_FUNCTION_RE = re.compile(
+    r"^\s*Function\s+ExcitationFunction\s*\(",
+    re.IGNORECASE | re.MULTILINE,
+)
+_MAIN_PROGRAM_RE = re.compile(
+    r"^\s*Sub\s+Main\s*(?:\(|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 TOOLS: list[Tool] = [
     Tool(
@@ -60,6 +72,54 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": [],
+        },
+    ),
+    Tool(
+        name="cst_define_user_excitation_signal",
+        description=(
+            "Create a 3D user-defined excitation signal such as an HPM pulse. "
+            "In connected mode this writes Model/3D/<name>.usf and registers it "
+            "with CST's TimeSignal object; in offline mode it returns both the "
+            ".usf content and the VBA registration script."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Excitation signal name, e.g. signal1.",
+                    "default": "signal1",
+                },
+                "usf_code": {
+                    "type": "string",
+                    "description": (
+                        "Complete .usf VBA code. It must define "
+                        "Function ExcitationFunction(t As Double) As Double."
+                    ),
+                },
+                "problem_type": {
+                    "type": "string",
+                    "enum": ["High Frequency", "Low Frequency"],
+                    "description": "CST TimeSignal problem type (default High Frequency).",
+                    "default": "High Frequency",
+                },
+                "ttotal": {
+                    "type": "number",
+                    "description": "Total signal duration used by CST for User signals.",
+                    "default": 80,
+                },
+                "min_samples": {
+                    "type": "integer",
+                    "description": "Minimum user signal samples, 1-29999 (default 1000).",
+                    "default": 1000,
+                },
+                "set_as_reference": {
+                    "type": "boolean",
+                    "description": "Set this signal as the reference excitation after creating it.",
+                    "default": True,
+                },
+            },
+            "required": ["usf_code"],
         },
     ),
     Tool(
@@ -288,6 +348,8 @@ async def handle(
             return _configure_integral_equation(arguments, client)
         elif name == "cst_get_solver_info":
             return _get_solver_info(arguments, client)
+        elif name == "cst_define_user_excitation_signal":
+            return _define_user_excitation_signal(arguments, client)
         elif name == "cst_configure_eigenmode_advanced":
             return _configure_eigenmode_advanced(arguments, client)
         elif name == "cst_configure_ie_solver_advanced":
@@ -304,6 +366,104 @@ async def handle(
             type="text",
             text=json.dumps({"tool": name, "status": "error", "message": str(e)}, indent=2),
         )]
+
+
+def _build_user_excitation_signal_vba(
+    *,
+    name: str,
+    problem_type: str,
+    ttotal: float,
+    min_samples: int,
+    set_as_reference: bool,
+) -> str:
+    create_signal = (
+        VBABuilder("TimeSignal")
+        .call("Reset")
+        .set("Name", name)
+        .set("SignalType", "User")
+        .set("ProblemType", problem_type)
+        .set_number("Ttotal", ttotal)
+        .set_number("MinUserSignalSamples", min_samples)
+        .call("Create")
+        .build()
+    )
+
+    if not set_as_reference:
+        return create_signal
+
+    reference_signal = (
+        VBABuilder("TimeSignal")
+        .call_with_args("ExcitationSignalAsReference", name, problem_type)
+        .build()
+    )
+    return f"{create_signal}\n\n{reference_signal}"
+
+
+def _validate_user_excitation_usf(usf_code: str) -> str:
+    if not usf_code or not usf_code.strip():
+        raise ValueError("usf_code cannot be empty.")
+    if not _EXCITATION_FUNCTION_RE.search(usf_code):
+        raise ValueError(
+            "User excitation .usf code must define "
+            "Function ExcitationFunction(t As Double) As Double."
+        )
+    if _MAIN_PROGRAM_RE.search(usf_code):
+        raise ValueError(
+            "User excitation .usf files must not contain a Sub Main program. "
+            "Rename it to Main2/Main3 before running the solver."
+        )
+    validate_vba_input(usf_code)
+    return usf_code
+
+
+def _define_user_excitation_signal(arguments: dict, client: CSTClient) -> list[TextContent]:
+    signal_name = validate_name(arguments.get("name", "signal1"), "name")
+    usf_code = _validate_user_excitation_usf(str(arguments.get("usf_code", "")))
+    problem_type = arguments.get("problem_type", "High Frequency")
+    valid_problem_types = ["High Frequency", "Low Frequency"]
+    if problem_type not in valid_problem_types:
+        return [TextContent(type="text", text=json.dumps({
+            "status": "error",
+            "message": f"Invalid problem_type '{problem_type}'. Valid: {valid_problem_types}",
+        }))]
+
+    ttotal = float(arguments.get("ttotal", 80))
+    min_samples = int(arguments.get("min_samples", 1000))
+    set_as_reference = bool(arguments.get("set_as_reference", True))
+    validate_positive(ttotal, "ttotal")
+    validate_range(min_samples, 1, 29999, "min_samples")
+
+    script = _build_user_excitation_signal_vba(
+        name=signal_name,
+        problem_type=problem_type,
+        ttotal=ttotal,
+        min_samples=min_samples,
+        set_as_reference=set_as_reference,
+    )
+
+    if client.connected:
+        file_result = client.write_user_excitation_signal_file(signal_name, usf_code)
+        if file_result.get("status") == "error":
+            result = file_result
+        else:
+            result = client.execute_vba(
+                script,
+                history_label=f"define excitation signal: {signal_name}",
+            )
+            result["usf_path"] = file_result.get("usf_path")
+    else:
+        result = client.execute_vba(script)
+
+    result["signal_name"] = signal_name
+    result["usf_filename"] = f"{signal_name}.usf"
+    result["usf_code"] = usf_code
+    result["vba"] = script
+    result["problem_type"] = problem_type
+    result["ttotal"] = ttotal
+    result["min_samples"] = min_samples
+    result["set_as_reference"] = set_as_reference
+    result["write_location_hint"] = f"Model\\3D\\{signal_name}.usf"
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
 def _configure_time_domain(arguments: dict, client: CSTClient) -> list[TextContent]:

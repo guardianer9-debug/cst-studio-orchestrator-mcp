@@ -595,7 +595,7 @@ class TestDiagnosticsOffline:
     def test_dismiss_dialogs_offline(self, offline_client):
         result = offline_client.dismiss_dialogs()
         # "ok" = no dialogs found, "dismissed" = found and dismissed some
-        assert result["status"] in ("ok", "dismissed")
+        assert result["status"] == "unsupported"
 
     def test_read_dialogs_offline(self, offline_client):
         result = offline_client.read_dialogs()
@@ -603,11 +603,11 @@ class TestDiagnosticsOffline:
 
     def test_dialog_watcher_lifecycle(self, offline_client):
         result = offline_client.start_dialog_watcher()
-        assert result["status"] in ("started", "already_running")
+        assert result["status"] == "unsupported"
         log = offline_client.get_dialog_log()
         assert "log" in log
         result = offline_client.stop_dialog_watcher()
-        assert result["status"] == "stopped"
+        assert result["status"] == "not_running"
 
     def test_stop_watcher_when_not_running(self, offline_client):
         # Stop watcher first if it's running from previous test
@@ -634,7 +634,7 @@ class TestDiagnosticsOffline:
         from mcp_cst_studio.tools.diagnostics import handle
         result = await handle("cst_dismiss_dialogs", {}, offline_client)
         data = json.loads(result[0].text)
-        assert data["status"] in ("ok", "dismissed")
+        assert data["status"] == "unsupported"
 
     @pytest.mark.asyncio
     async def test_dismiss_dialogs_read_only(self, offline_client):
@@ -648,10 +648,10 @@ class TestDiagnosticsOffline:
         from mcp_cst_studio.tools.diagnostics import handle
         result = await handle("cst_start_dialog_watcher", {}, offline_client)
         data = json.loads(result[0].text)
-        assert data["status"] in ("started", "already_running")
+        assert data["status"] == "unsupported"
         result = await handle("cst_stop_dialog_watcher", {}, offline_client)
         data = json.loads(result[0].text)
-        assert data["status"] == "stopped"
+        assert data["status"] == "not_running"
 
     @pytest.mark.asyncio
     async def test_unknown_tool(self, offline_client):

@@ -13,6 +13,8 @@ pair so the MCP protocol sees all tools in one list.
 from __future__ import annotations
 
 import logging
+import json
+import uuid
 from typing import TYPE_CHECKING, Awaitable, Callable, cast
 
 from mcp.types import TextContent, Tool
@@ -79,7 +81,27 @@ class ToolRegistry:
             if handler is None:
                 raise ValueError(f"Unknown tool: {name}")
             logger.debug("Dispatching tool: %s", name)
-            return await handler(name, arguments)
+            from mcp_cst_studio.evidence import record
+            call_id = uuid.uuid4().hex
+            record({"event": "tool_start", "call_id": call_id, "tool": name, "arguments": arguments})
+            try:
+                result = await handler(name, arguments)
+            except BaseException as exc:
+                record({"event": "tool_exception", "call_id": call_id,
+                        "error": type(exc).__name__, "message": str(exc)})
+                raise
+            record({"event": "tool_result", "call_id": call_id,
+                    "content": [item.model_dump() for item in result]})
+            # Keep the existing TextContent contract and expose protocol-level errors.
+            from mcp.types import CallToolResult
+            failed = False
+            for item in result:
+                try:
+                    payload = json.loads(item.text)
+                    failed |= payload.get("status") in ("error", "unknown", "unsupported")
+                except (ValueError, AttributeError):
+                    pass
+            return CallToolResult(content=result, isError=failed)
 
 
 # Module-level registry shared across register_* calls
@@ -110,6 +132,7 @@ def register_all_tools(server: Server, client: CSTClient) -> None:
     from mcp_cst_studio.tools.transforms import register_transform_tools
     from mcp_cst_studio.tools.matching import register_matching_tools
     from mcp_cst_studio.tools.vba import register_vba_tools
+    from mcp_cst_studio.tools.cases import register_case_tools
 
     register_project_tools(server, client)
     register_geometry_tools(server, client)
@@ -132,6 +155,7 @@ def register_all_tools(server: Server, client: CSTClient) -> None:
     register_matching_tools(server, client)
     register_schematic_tools(server, client)
     register_vba_tools(server, client)
+    register_case_tools(server, client)
 
     # Wire accumulated tools into the MCP server protocol
     _registry.install(server)

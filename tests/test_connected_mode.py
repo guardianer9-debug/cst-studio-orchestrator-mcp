@@ -58,7 +58,7 @@ class TestClientExecuteVBA:
         assert result["status"] == "error"
         assert "CST error" in result["message"]
 
-    def test_model3d_attribute_error_falls_back_to_schematic(
+    def test_partial_model3d_error_is_never_replayed_in_schematic(
         self, mock_client: CSTClient
     ):
         mock_client._project.model3d.add_to_history.side_effect = AttributeError(
@@ -66,8 +66,9 @@ class TestClientExecuteVBA:
         )
         mock_client._project.schematic.execute_vba_code.return_value = "ok"
         result = mock_client.execute_vba("Sub Main\nEnd Sub")
-        assert result["status"] == "executed"
-        mock_client._project.schematic.execute_vba_code.assert_called_once()
+        assert result["status"] == "error"
+        assert result["partial_execution_possible"] is True
+        mock_client._project.schematic.execute_vba_code.assert_not_called()
 
     def test_result_string_returned(self, mock_client: CSTClient):
         mock_client._project.model3d.add_to_history.return_value = "42"
@@ -77,26 +78,28 @@ class TestClientExecuteVBA:
     def test_none_result_returns_ok(self, mock_client: CSTClient):
         mock_client._project.model3d.add_to_history.return_value = None
         result = mock_client.execute_vba("Sub Main\nEnd Sub")
-        assert result["result"] == "ok"
+        assert result["result"] is None
 
 
 class TestClientNewProject:
     """Test new_project respects project_type parameter."""
 
-    def test_mws_project_type(self, mock_client: CSTClient):
+    def test_mws_project_type(self, mock_client: CSTClient, tmp_path):
         mock_client._de = mock_client._project  # reuse mock as DE
-        result = mock_client.new_project("/tmp/test.cst", "MWS")
+        mock_client._config.work_dir = str(tmp_path)
+        result = mock_client.new_project(str(tmp_path / "test.cst"), "MWS")
         assert result["status"] == "created"
         assert result["type"] == "MWS"
 
-    def test_ems_project_type(self, mock_client: CSTClient):
+    def test_ems_project_type(self, mock_client: CSTClient, tmp_path):
         from unittest.mock import MagicMock
 
         de = MagicMock()
         de.new_ems.return_value = MagicMock()
         de.new_ems.return_value.save.return_value = None
         mock_client._de = de
-        result = mock_client.new_project("/tmp/test.cst", "EMS")
+        mock_client._config.work_dir = str(tmp_path)
+        result = mock_client.new_project(str(tmp_path / "test.cst"), "EMS")
         assert result["status"] == "created"
         assert result["type"] == "EMS"
         de.new_ems.assert_called_once()
@@ -393,9 +396,10 @@ class TestSimulationConnected:
     async def test_run_simulation(self, mock_client: CSTClient):
         from mcp_cst_studio.tools.simulation import handle
 
+        mock_client._project.model3d.is_solver_running.return_value = False
         result = await handle(
             "cst_run_simulation",
-            {"solver_type": "Time Domain"},
+            {},
             mock_client,
         )
         data = _parse(result)
@@ -411,7 +415,8 @@ class TestSimulationConnected:
             mock_client,
         )
         data = _parse(result)
-        _assert_executed(data)
+        assert data["status"] == "requested"
+        mock_client._project.model3d.abort_solver.assert_called_once_with(timeout=30)
 
 
 class TestResultsConnected:

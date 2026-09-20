@@ -13,6 +13,9 @@ class CSTConfig:
     version: str = "2026"
     connected: bool = False
     log_level: str = "INFO"
+    connection_mode: str = "new"
+    pid: int | None = None
+    hidden: bool = True
 
     @classmethod
     def from_env(cls) -> CSTConfig:
@@ -23,22 +26,17 @@ class CSTConfig:
         if not cst_path:
             cst_path = _auto_detect_cst(version)
 
-        connected = False
-        if cst_path:
-            try:
-                import cst.interface  # noqa: F401
-                connected = True
-            except ImportError:
-                pass
-
         log_level = os.environ.get("CST_LOG_LEVEL", "INFO")
 
         return cls(
             cst_path=cst_path,
             work_dir=work_dir,
             version=version,
-            connected=connected,
+            connected=False,
             log_level=log_level,
+            connection_mode=os.environ.get("CST_CONNECTION_MODE", "new"),
+            pid=int(os.environ["CST_PID"]) if os.environ.get("CST_PID") else None,
+            hidden=os.environ.get("CST_HIDDEN", "1") == "1",
         )
 
 

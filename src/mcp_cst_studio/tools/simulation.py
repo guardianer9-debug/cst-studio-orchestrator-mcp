@@ -199,8 +199,14 @@ def _handle_run_simulation(
             )
         ]
 
-    vba_code = _build_solver_start_vba(solver_type)
-    result = client.execute_vba(vba_code)
+    if client.connected:
+        if solver_type is not None:
+            return [TextContent(type="text", text=json.dumps({"status": "error",
+                "message": "Configure the solver explicitly before starting; omit solver_type."}))]
+        result = client.solver_command("start") if async_mode else client.run_solver()
+    else:
+        vba_code = _build_solver_start_vba(solver_type)
+        result = client.execute_vba(vba_code)
 
     result["solver_type"] = solver_type or "current"
     result["mode"] = "async" if async_mode else "blocking"
@@ -221,25 +227,7 @@ def _handle_run_simulation(
 def _handle_get_status(client: CSTClient) -> list[TextContent]:
     """Handle cst_get_simulation_status."""
     if client.connected:
-        # In connected mode, query the solver for status information
-        script = VBAScript()
-        script.add_comment("Query simulation status")
-        # CST exposes solver status through VBA macros
-        status_vba = (
-            'Dim running As Boolean\n'
-            'Dim progress As Double\n'
-            'running = Solver.IsRunning\n'
-            'progress = Solver.GetProgress\n'
-            'SelectTreeItem "Design Parameters"\n'
-            'MsgBox "Running: " & running & vbCrLf & '
-            '"Progress: " & progress & "%"'
-        )
-        script.add_raw(status_vba)
-        result = client.execute_vba(script.build())
-        result["description"] = (
-            "Queried CST solver status. Check 'result' field for details."
-        )
-        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        return [TextContent(type="text", text=json.dumps(client.solver_status(), indent=2))]
 
     # Offline mode — provide guidance
     result = {
@@ -272,6 +260,8 @@ def _handle_simple_solver_command(
     command: str, client: CSTClient
 ) -> list[TextContent]:
     """Handle pause, resume, and stop commands."""
+    if client.connected:
+        return [TextContent(type="text", text=json.dumps(client.solver_command(command.lower()), indent=2))]
     vba = VBABuilder("Solver")
     vba.raw_line(f"Solver.{command}")
     vba_code = vba.build()

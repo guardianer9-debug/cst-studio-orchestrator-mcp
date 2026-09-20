@@ -246,3 +246,76 @@ async def test_schematic_call_rejects_private_method(mock_client: CSTClient):
     data = _parse(result)
     assert data["status"] == "error"
     assert "public" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_transient_cosimulation_task_offline_returns_vba(
+    offline_client: CSTClient,
+):
+    from mcp_cst_studio.tools.schematic import handle
+
+    result = await handle(
+        "cst_schematic_create_transient_task",
+        {
+            "name": "Tran1",
+            "tmax": 250,
+            "samples": 1001,
+            "circuit_simulator": "cosimulation",
+            "combine_results": True,
+            "combine_block": "CSSCHEM1",
+            "update": True,
+        },
+        offline_client,
+    )
+
+    data = _parse(result)
+    vba = data.get("vba", "")
+    assert data["status"] == "offline"
+    assert 'With SimulationTask' in vba
+    assert '.Type ("transient")' in vba
+    assert '.Name ("Tran1")' in vba
+    assert '.SetProperty "tmax", "250"' in vba
+    assert '.SetProperty "circuit simulator", "cosimulation"' in vba
+    assert '.SetProperty "sampling method", "Automatic"' in vba
+    assert '.SetProperty "nfdsamples", "1001"' in vba
+    assert '.SetProperty "docombineresults", "True"' in vba
+    assert '.SetProperty "blocknameforcombineresults", "CSSCHEM1"' in vba
+    assert '.Update' in vba
+
+
+@pytest.mark.asyncio
+async def test_create_transient_cosimulation_task_connected_uses_simulation_task(
+    mock_client: CSTClient,
+):
+    from mcp_cst_studio.tools.schematic import handle
+
+    task = mock_client._project.schematic.SimulationTask
+    task.DoesExist.return_value = False
+
+    result = await handle(
+        "cst_schematic_create_transient_task",
+        {
+            "name": "Tran1",
+            "tmax": 250,
+            "samples": 1001,
+            "combine_block": "CSSCHEM1",
+            "combine_results": True,
+            "update": True,
+        },
+        mock_client,
+    )
+
+    data = _parse(result)
+    assert data["status"] == "executed"
+    task.Reset.assert_called()
+    task.Type.assert_called_once_with("transient")
+    task.Name.assert_any_call("Tran1")
+    task.Create.assert_called_once()
+    task.SetProperty.assert_any_call("tmax", "250")
+    task.SetProperty.assert_any_call("circuit simulator", "cosimulation")
+    task.SetProperty.assert_any_call("sampling method", "Automatic")
+    task.SetProperty.assert_any_call("nfdsamples", "1001")
+    task.SetProperty.assert_any_call("docombineresults", "True")
+    task.SetProperty.assert_any_call("blocknameforcombineresults", "CSSCHEM1")
+    task.Update.assert_called_once()
+    mock_client._project.model3d.add_to_history.assert_not_called()

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from mcp_cst_studio.config import CSTConfig
@@ -36,6 +37,7 @@ class CSTClient:
         self._de: Any = None  # cst.interface.DesignEnvironment
         self._project: Any = None  # Active project handle
         self._project_path: str | None = None
+        self._owns_environment = False
 
     @property
     def connected(self) -> bool:
@@ -56,10 +58,10 @@ class CSTClient:
     def connect(self) -> dict:
         """Connect to CST Design Environment.
 
-        First tries to connect to an already-running instance. If none
-        is running, launches a new one.
+        Create an isolated instance, or attach to an explicitly configured PID.
+        Never select the first running environment or its first project.
         """
-        if not CST_AVAILABLE:
+        if not CST_AVAILABLE or self._config.connection_mode == "offline":
             return {
                 "status": "offline",
                 "message": "CST Python library not available. Running in offline mode — "
@@ -67,45 +69,43 @@ class CSTClient:
             }
 
         try:
-            # Try connecting to an already-running CST instance first
-            running = cst.interface.running_design_environments()
-            if running:
-                self._de = cst.interface.DesignEnvironment.connect(running[0])
-                self._config.connected = True
-                # Pick up any already-open project
-                open_projects = self._de.get_open_projects()
-                if open_projects:
-                    self._project = open_projects[0]
-                    fname = self._project.filename
-                    self._project_path = str(fname() if callable(fname) else fname)
-                return {
-                    "status": "connected",
-                    "message": f"Connected to running CST instance (PID {running[0]})",
-                    "open_projects": len(open_projects) if open_projects else 0,
-                }
-
-            # No running instance — launch a new one
-            self._de = cst.interface.DesignEnvironment()
+            if self._de is not None:
+                return {"status": "connected", "owned": self._owns_environment}
+            if self._config.connection_mode == "attach":
+                if self._config.pid is None:
+                    raise ValueError("CST_PID is required for attach mode")
+                self._de = cst.interface.DesignEnvironment.connect(self._config.pid)
+            elif self._config.connection_mode == "new":
+                self._de = cst.interface.DesignEnvironment(
+                    options=["-hide"] if self._config.hidden else []
+                )
+                self._owns_environment = True
+                self._de.set_quiet_mode(True)
+            else:
+                raise ValueError("CST_CONNECTION_MODE must be new, attach, or offline")
             self._config.connected = True
-            return {"status": "connected", "message": "Launched new CST Design Environment"}
+            return {"status": "connected", "pid": self._de.pid(),
+                    "owned": self._owns_environment, "project_bound": False}
         except Exception as e:
             self._config.connected = False
             return {
-                "status": "offline",
-                "message": f"Failed to connect to CST: {e}. Running in offline mode.",
+                "status": "error",
+                "message": f"Failed to connect to CST: {e}",
             }
 
     def disconnect(self) -> dict:
         """Disconnect from CST."""
         if self._de is not None:
             try:
-                self._de.close()
-            except Exception:
-                pass
+                if self._owns_environment:
+                    self._de.close()
+            except Exception as exc:
+                return {"status": "error", "message": str(exc)}
             self._de = None
             self._project = None
             self._project_path = None
             self._config.connected = False
+            self._owns_environment = False
         return {"status": "disconnected"}
 
     # Maps project type codes to DesignEnvironment factory methods
@@ -119,6 +119,12 @@ class CSTClient:
         "PCB": "new_pcbs",
     }
 
+    def checked_project_path(self, path: str) -> str:
+        resolved = Path(path).resolve()
+        if self._config.work_dir and not resolved.is_relative_to(Path(self._config.work_dir).resolve()):
+            raise ValueError("Project must be inside CST_WORK_DIR; copy references first")
+        return str(resolved)
+
     def new_project(self, path: str, project_type: str = "MWS") -> dict:
         """Create a new CST project.
 
@@ -126,19 +132,20 @@ class CSTClient:
         ``project.save(path)`` can trigger a blocking modal dialog
         (e.g. overwrite confirmation).  The watcher auto-dismisses it.
         """
+        if self._de is None and CST_AVAILABLE and self._config.connection_mode != "offline":
+            connection = self.connect()
+            if connection.get("status") == "error":
+                return connection
         if self.connected and self._de is not None:
             try:
-                factory_name = self._PROJECT_FACTORIES.get(
-                    project_type.upper(), "new_mws"
-                )
-                factory = getattr(self._de, factory_name, self._de.new_mws)
-                self._project = factory()
-                # Start watcher to handle potential save dialog
-                self.start_dialog_watcher()
-                try:
-                    self._project.save(path)
-                finally:
-                    self.stop_dialog_watcher()
+                path = self.checked_project_path(path)
+                if Path(path).exists():
+                    raise FileExistsError("New project destination already exists")
+                factory_name = self._PROJECT_FACTORIES.get(project_type.upper())
+                if factory_name is None:
+                    raise ValueError(f"Unsupported project type: {project_type}")
+                self._project = getattr(self._de, factory_name)()
+                self._project.save(path)
                 self._project_path = path
                 return {"status": "created", "path": path, "type": project_type}
             except Exception as e:
@@ -154,8 +161,17 @@ class CSTClient:
 
     def open_project(self, path: str) -> dict:
         """Open an existing CST project."""
+        if self._de is None and CST_AVAILABLE and self._config.connection_mode != "offline":
+            connection = self.connect()
+            if connection.get("status") == "error":
+                return connection
         if self.connected and self._de is not None:
             try:
+                path = self.checked_project_path(path)
+                if self._project is not None:
+                    current = Path(self._project_path).resolve() if self._project_path else None
+                    if current != Path(path).resolve():
+                        raise ValueError("Close the current project before opening another")
                 self._project = self._de.open_project(path)
                 self._project_path = path
                 return {"status": "opened", "path": path}
@@ -179,15 +195,12 @@ class CSTClient:
         save_path = path or self._project_path
         if self.connected and self._project is not None:
             try:
-                # Start watcher to handle potential save dialog
-                self.start_dialog_watcher()
-                try:
-                    if save_path:
-                        self._project.save(save_path)
-                    else:
-                        self._project.save()
-                finally:
-                    self.stop_dialog_watcher()
+                if save_path:
+                    save_path = self.checked_project_path(save_path)
+                    same_project = bool(self._project_path and Path(save_path).resolve() == Path(self._project_path).resolve())
+                    self._project.save(save_path, allow_overwrite=same_project)
+                else:
+                    self._project.save()
                 self._project_path = save_path
                 return {"status": "saved", "path": save_path}
             except Exception as e:
@@ -213,55 +226,102 @@ class CSTClient:
     _history_counter: int = 0
 
     def execute_vba(self, vba_code: str, history_label: str | None = None) -> dict:
-        """Execute VBA code in CST.
+        """Execute once in the explicit 3D domain; never replay after partial failure."""
+        if not self.connected or self._project is None:
+            return {"status": "offline", "vba": vba_code,
+                    "message": "VBA generated; no CST execution occurred."}
+        try:
+            model = self._project.model3d
+            if model is None:
+                raise RuntimeError("No 3D interface; use the explicit schematic operation")
+            CSTClient._history_counter += 1
+            result = model.add_to_history(
+                history_label or f"mcp_action_{CSTClient._history_counter}", vba_code
+            )
+            return {"status": "executed", "result": self._jsonable(result)}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "vba": vba_code,
+                    "partial_execution_possible": True}
 
-        In connected mode: executes via ``model3d.add_to_history()`` which
-        adds the VBA macro to the project history and runs it immediately.
-        A background :class:`DialogWatcher` runs during execution to
-        auto-dismiss any CST modal dialogs (error, property, frequency-range)
-        that would otherwise block the COM call indefinitely.
-        Falls back to the schematic interface for Design Studio projects.
+    def read_parameters(self, name: str | None = None) -> dict:
+        """Read stored expressions and evaluated values without executing a macro."""
+        if not self.connected or self._project is None:
+            return {"status": "offline"}
+        try:
+            model = self._project.model3d or self._project.schematic
+            values = []
+            for index in range(model.GetNumberOfParameters()):
+                key = model.GetParameterName(index)
+                if name is None or key == name:
+                    values.append({"name": key, "expression": model.GetParameterSValue(index),
+                                   "value": model.GetParameterNValue(index)})
+            if name is not None and not values:
+                raise ValueError(f"Parameter not found: {name}")
+            return {"status": "ok", "project_path": self._project_path, "parameters": values}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
 
-        In offline mode: returns the VBA script for manual execution.
+    def solver_status(self) -> dict:
+        """A failed query is unknown, never evidence that a solver stopped."""
+        if not self.connected or self._project is None:
+            return {"status": "offline", "running": None}
+        try:
+            model = self._project.model3d
+            running = bool(model.is_solver_running(timeout=10))
+            return {"status": "ok", "running": running,
+                    "run_info": self._jsonable(model.get_solver_run_info(timeout=10)),
+                    "project_path": self._project_path}
+        except Exception as exc:
+            return {"status": "unknown", "running": None, "message": str(exc)}
+
+    def solver_command(self, command: str) -> dict:
+        """Native asynchronous 3D controls. DS task execution has a separate contract."""
+        if not self.connected or self._project is None:
+            return {"status": "offline"}
+        methods = {"start": "start_solver", "stop": "abort_solver",
+                   "pause": "pause_solver", "resume": "resume_solver"}
+        try:
+            method = methods[command]
+            state = self.solver_status()
+            if state["status"] != "ok":
+                return state
+            if command == "start" and state["running"]:
+                return {"status": "error", "message": "A solver is already running"}
+            getattr(self._project.model3d, method)(timeout=30)
+            return {"status": "requested", "command": command,
+                    "observed": self.solver_status()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    def write_user_excitation_signal_file(self, signal_name: str, usf_code: str) -> dict:
+        """Write a CST user-defined excitation ``.usf`` file next to the project.
+
+        CST resolves a user excitation named ``signal1`` from
+        ``<project-base>/Model/3D/signal1.usf`` where ``<project-base>`` is the
+        saved project path without the ``.cst`` suffix.
         """
-        if self.connected and self._project is not None:
-            try:
-                CSTClient._history_counter += 1
-                label = history_label or f"mcp_action_{CSTClient._history_counter}"
-                watcher = DialogWatcher(poll_interval=0.5)
-                watcher.start()
-                try:
-                    result = self._project.model3d.add_to_history(label, vba_code)
-                finally:
-                    watcher.stop()
-                response: dict = {
-                    "status": "executed",
-                    "result": str(result) if result else "ok",
-                }
-                log = watcher.get_log()
-                if log:
-                    response["dialogs_dismissed"] = len(log)
-                    response["dialog_log"] = log
-                return response
-            except AttributeError:
-                # DS/CS projects may only have the model3d interface;
-                # fall back to the schematic interface
-                try:
-                    result = self._project.schematic.execute_vba_code(vba_code)
-                    return {
-                        "status": "executed",
-                        "result": str(result) if result else "ok",
-                    }
-                except Exception as e:
-                    return {"status": "error", "message": str(e), "vba": vba_code}
-            except Exception as e:
-                return {"status": "error", "message": str(e), "vba": vba_code}
+        if not self._project_path:
+            return {
+                "status": "error",
+                "message": "A saved CST project path is required before writing a .usf file.",
+            }
 
-        return {
-            "status": "offline",
-            "vba": vba_code,
-            "message": "VBA script generated. Execute in CST Studio Suite on Windows.",
-        }
+        try:
+            project_path = Path(self._project_path)
+            project_base = (
+                project_path.with_suffix("")
+                if project_path.suffix.lower() == ".cst"
+                else project_path
+            )
+            usf_path = project_base / "Model" / "3D" / f"{signal_name}.usf"
+            usf_path.parent.mkdir(parents=True, exist_ok=True)
+            usf_path.write_text(usf_code, encoding="utf-8", newline="\n")
+            return {
+                "status": "written",
+                "usf_path": str(usf_path),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     def _schematic(self) -> Any:
         """Return the active project schematic remote object."""
@@ -390,6 +450,76 @@ class CSTClient:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    def schematic_create_transient_task(
+        self,
+        *,
+        name: str = "Tran1",
+        tmax: str = "250",
+        samples: int = 1001,
+        sampling_method: str = "Automatic",
+        circuit_simulator: str = "cosimulation",
+        sparameter_interpolation: str = "magnitude/phase",
+        combine_results: bool = False,
+        combine_block: str = "CSSCHEM1",
+        update: bool = False,
+    ) -> dict:
+        """Create or update a Design Studio transient co-simulation task."""
+        try:
+            task = self._schematic().SimulationTask
+            task.Reset()
+            task.Name(name)
+            exists = bool(task.DoesExist())
+
+            if not exists:
+                task.Reset()
+                task.Type("transient")
+                task.Name(name)
+                task.Create()
+
+            task.Reset()
+            task.Name(name)
+            task.SetProperty("tmax", str(tmax))
+            task.SetProperty("circuit simulator", circuit_simulator)
+            task.SetProperty("sampling method", sampling_method)
+            task.SetProperty("nfdsamples", str(samples))
+            task.SetProperty(
+                "s-parameter interpolation scheme",
+                sparameter_interpolation,
+            )
+            task.SetProperty("docombineresults", "True" if combine_results else "False")
+            if combine_results:
+                task.SetProperty("blocknameforcombineresults", combine_block)
+            try:
+                task.ValidateSetup()
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "message": f"SimulationTask.ValidateSetup failed: {exc}",
+                    "task": name,
+                }
+            if update:
+                task.Update()
+            return {
+                "status": "executed",
+                "result": "ok",
+                "interface": "schematic",
+                "object": "SimulationTask",
+                "task": name,
+                "created": not exists,
+                "updated": update,
+                "settings": {
+                    "tmax": str(tmax),
+                    "samples": samples,
+                    "sampling_method": sampling_method,
+                    "circuit_simulator": circuit_simulator,
+                    "sparameter_interpolation": sparameter_interpolation,
+                    "combine_results": combine_results,
+                    "combine_block": combine_block if combine_results else "",
+                },
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     def schematic_list(self) -> dict:
         """List available schematic blocks and nets from the active project."""
         try:
@@ -511,49 +641,22 @@ class CSTClient:
             return {"status": "error", "message": str(e)}
 
     def execute_vba_silent(self, vba_code: str) -> dict:
-        """Execute VBA without adding to project history.
-
-        Uses ``schematic.execute_vba_code()`` which runs the macro silently.
-        The code must be wrapped in ``Sub Main() ... End Sub``.
-        Ideal for optimization loops where dozens of iterations would
-        otherwise bloat the history list.
-
-        A background :class:`DialogWatcher` runs during execution to
-        auto-dismiss any CST modal dialogs that would block the COM call.
-
-        In offline mode: returns the VBA script for manual execution.
-        """
-        if self.connected and self._project is not None:
-            try:
-                watcher = DialogWatcher(poll_interval=0.5)
-                watcher.start()
-                try:
-                    self._project.schematic.execute_vba_code(vba_code)
-                finally:
-                    watcher.stop()
-                response: dict = {"status": "executed"}
-                log = watcher.get_log()
-                if log:
-                    response["dialogs_dismissed"] = len(log)
-                    response["dialog_log"] = log
-                return response
-            except Exception as e:
-                return {"status": "error", "message": str(e), "vba": vba_code}
-
-        return {
-            "status": "offline",
-            "vba": vba_code,
-            "message": "VBA script generated (silent). Execute in CST Studio Suite.",
-        }
+        """Execute only in the schematic domain, without automatic dialog acceptance."""
+        if not self.connected or self._project is None:
+            return {"status": "offline", "vba": vba_code,
+                    "message": "VBA generated; no CST execution occurred."}
+        try:
+            self._schematic().execute_vba_code(vba_code)
+            return {"status": "executed"}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc), "vba": vba_code,
+                    "partial_execution_possible": True}
 
     def is_solver_running(self) -> bool:
-        """Check if a solver is currently running."""
-        if self.connected and self._project is not None:
-            try:
-                return bool(self._project.model3d.is_solver_running())
-            except Exception:
-                return False
-        return False
+        """Legacy boolean API raises on unknown rather than reporting false."""
+        if not self.connected or self._project is None:
+            return False
+        return bool(self._project.model3d.is_solver_running(timeout=10))
 
     def wait_for_solver(self, timeout: float = 600, poll_interval: float = 2.0) -> dict:
         """Wait for a running solver to finish.
@@ -648,13 +751,22 @@ class CSTClient:
             "message": "Result export requires connected mode.",
         }
 
-    def get_result(self, tree_path: str) -> dict:
+    def get_result(self, tree_path: str, domain: str = "3d") -> dict:
         """Get a result from the CST result tree."""
         if self.connected and self._project is not None:
             try:
-                result = cst.results.ProjectFile(self._project_path)
-                data = result.get_3d().get_tree_item(tree_path)
-                return {"status": "ok", "data": str(data)}
+                if domain not in ("3d", "schematic"):
+                    raise ValueError("domain must be 3d or schematic")
+                result = cst.results.ProjectFile(self._project_path, allow_interactive=True)
+                module = result.get_3d() if domain == "3d" else result.get_schematic()
+                item = module.get_result_item(tree_path)
+                y = [complex(v) for v in item.get_ydata()]
+                return {"status": "ok", "project": self._project_path, "domain": domain,
+                        "tree_path": tree_path, "run_id": item.run_id,
+                        "title": item.title, "xlabel": item.xlabel, "ylabel": item.ylabel,
+                        "representation": "complex_cartesian", "data": {
+                            "x": list(item.get_xdata()), "real": [v.real for v in y],
+                            "imag": [v.imag for v in y]}}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
@@ -663,6 +775,17 @@ class CSTClient:
             "tree_path": tree_path,
             "message": "Result retrieval requires connected mode with a completed simulation.",
         }
+
+    def list_results(self) -> dict:
+        if not self.connected or not self._project_path:
+            return {"status": "offline"}
+        try:
+            project = cst.results.ProjectFile(self._project_path, allow_interactive=True)
+            return {"status": "ok", "project": self._project_path,
+                    "3d": project.get_3d().get_tree_items(),
+                    "schematic": project.get_schematic().get_tree_items()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
 
     def delete_results(self) -> dict:
         """Delete solver results via ``model3d.DeleteResults()``.
@@ -813,10 +936,7 @@ class CSTClient:
         Returns details of each dialog that was dismissed (title, text,
         action taken).  Uses Win32 API on Windows; no-op on other platforms.
         """
-        dismissed = dismiss_cst_dialogs()
-        if dismissed:
-            return {"status": "dismissed", "count": len(dismissed), "dialogs": dismissed}
-        return {"status": "ok", "message": "No CST dialogs found."}
+        return {"status": "unsupported", "message": "Global dialog dismissal is disabled; inspect the owned instance error."}
 
     def read_dialogs(self) -> dict:
         """Read (but don't dismiss) any visible CST dialog windows."""
@@ -830,11 +950,7 @@ class CSTClient:
 
     def start_dialog_watcher(self) -> dict:
         """Start background thread that auto-dismisses CST dialogs."""
-        if CSTClient._dialog_watcher is not None and CSTClient._dialog_watcher.running:
-            return {"status": "already_running"}
-        CSTClient._dialog_watcher = DialogWatcher(poll_interval=0.5)
-        CSTClient._dialog_watcher.start()
-        return {"status": "started"}
+        return {"status": "unsupported", "message": "Automatic dialog acceptance is disabled."}
 
     def stop_dialog_watcher(self) -> dict:
         """Stop the background dialog watcher and return its log."""

@@ -165,8 +165,8 @@ class TestCSTConfigFromEnv:
 
         assert config.cst_path == detected
 
-    def test_from_env_connected_true_when_cst_importable(self, monkeypatch):
-        """When cst.interface is importable, connected=True."""
+    def test_importable_library_does_not_mean_connected(self, monkeypatch):
+        """Import availability must not claim an established CST connection."""
         monkeypatch.setenv("CST_PATH", "/some/cst")
         monkeypatch.delenv("CST_WORK_DIR", raising=False)
         monkeypatch.delenv("CST_VERSION", raising=False)
@@ -179,7 +179,7 @@ class TestCSTConfigFromEnv:
 
         config = CSTConfig.from_env()
 
-        assert config.connected is True
+        assert config.connected is False
 
     def test_from_env_work_dir_expands_tilde(self, monkeypatch):
         """Default work_dir should expand ~ to the user's home directory."""

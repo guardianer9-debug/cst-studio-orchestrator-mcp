@@ -200,6 +200,146 @@ TOOLS: list[Tool] = [
             "required": ["x", "y", "z"],
         },
     ),
+    Tool(
+        name="cst_set_mesh_properties",
+        description=(
+            "Set full global Mesh Properties (Hexahedral FIT / TLM), matching the GUI "
+            "dialog: cells per wavelength near/far, cells per max model-box edge, "
+            "minimum-cell ratio, and edge refinement. Use this instead of the simpler "
+            "cst_set_mesh_density when you need near/far control."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mesh_type": {
+                    "type": "string",
+                    "enum": ["Hexahedral", "Hexahedral TLM", "PBA"],
+                    "description": "Mesh type (default Hexahedral / PBA)",
+                    "default": "Hexahedral",
+                },
+                "steps_per_wave_near": {
+                    "type": "integer",
+                    "description": "Cells per wavelength near model (GUI default 10)",
+                    "default": 10,
+                },
+                "steps_per_wave_far": {
+                    "type": "integer",
+                    "description": "Cells per wavelength far from model (default 15)",
+                    "default": 15,
+                },
+                "same_as_near_wavelength": {
+                    "type": "boolean",
+                    "description": "Use same cells/wavelength far as near (default false)",
+                    "default": False,
+                },
+                "steps_per_box_near": {
+                    "type": "integer",
+                    "description": "Cells per max model-box edge near model (default 15)",
+                    "default": 15,
+                },
+                "steps_per_box_far": {
+                    "type": "integer",
+                    "description": "Cells per max model-box edge far (default 15)",
+                    "default": 15,
+                },
+                "ratio_limit_geometry": {
+                    "type": "number",
+                    "description": (
+                        "Minimum-cell control: fraction/ratio vs max cell "
+                        "(GUI 'Fraction of maximum cell near to model', default 10)"
+                    ),
+                    "default": 10,
+                },
+                "edge_refinement": {
+                    "type": "boolean",
+                    "description": "Enable global edge refinement (default true)",
+                    "default": True,
+                },
+                "edge_refinement_ratio": {
+                    "type": "number",
+                    "description": "Edge refinement ratio (default 2)",
+                    "default": 2,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="cst_set_local_mesh_properties",
+        description=(
+            "Set Local Mesh Properties for a solid (component:solid) or a mesh group, "
+            "matching the GUI Local Mesh dialog: volume refinement (none / absolute / "
+            "fraction of max cell / cells across object / ratio), edge refinement, and "
+            "whether to consider global refinement. Creates the mesh group if needed."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "component": {
+                    "type": "string",
+                    "description": "Component name (e.g. 'component1'). Required with solid.",
+                },
+                "solid": {
+                    "type": "string",
+                    "description": "Solid name (e.g. 'solid2'). Required with component.",
+                },
+                "mesh_group": {
+                    "type": "string",
+                    "description": (
+                        "Optional existing mesh group name (e.g. 'meshgroup1'). "
+                        "If set, applies settings to that group instead of a single solid."
+                    ),
+                },
+                "volume_refinement": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "absolute",
+                        "fraction",
+                        "cells_across",
+                        "ratio",
+                    ],
+                    "description": (
+                        "Volume refinement type: none, absolute (max cell size), "
+                        "fraction (of max cell near model), cells_across (n cells "
+                        "across object), or ratio (cell size / N)"
+                    ),
+                    "default": "none",
+                },
+                "volume_value": {
+                    "type": "number",
+                    "description": (
+                        "Value for volume refinement: mm for absolute, factor for "
+                        "fraction/ratio, count for cells_across"
+                    ),
+                    "default": 2,
+                },
+                "edge_refinement": {
+                    "type": "string",
+                    "enum": ["none", "ratio", "steps"],
+                    "description": "Local edge refinement type (default none)",
+                    "default": "none",
+                },
+                "edge_value": {
+                    "type": "number",
+                    "description": "Edge refinement ratio or steps (default 2)",
+                    "default": 2,
+                },
+                "consider_global_refinement": {
+                    "type": "boolean",
+                    "description": "Also apply global refinement settings (default true)",
+                    "default": True,
+                },
+                "mesh_type": {
+                    "type": "string",
+                    "enum": ["Hex", "HexTLM", "PBA", "Tet"],
+                    "description": "Mesh type for this local settings block (default Hex)",
+                    "default": "Hex",
+                },
+            },
+            "required": [],
+        },
+    ),
 ]
 
 async def handle(
@@ -223,6 +363,10 @@ async def handle(
             return _set_pml_properties(arguments, client)
         elif name == "cst_add_fixpoint_mesh":
             return _add_fixpoint_mesh(arguments, client)
+        elif name == "cst_set_mesh_properties":
+            return _set_mesh_properties(arguments, client)
+        elif name == "cst_set_local_mesh_properties":
+            return _set_local_mesh_properties(arguments, client)
 
         return [TextContent(
             type="text",
@@ -415,6 +559,259 @@ def _add_fixpoint_mesh(arguments: dict, client: CSTClient) -> list[TextContent]:
     if name is not None:
         result["name"] = name
     return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+_MESH_TYPE_MAP = {
+    "Hexahedral": ("PBA", "Hex"),
+    "Hexahedral TLM": ("HexahedralTLM", "HexTLM"),
+    "PBA": ("PBA", "Hex"),
+}
+
+
+def _set_mesh_properties(arguments: dict, client: CSTClient) -> list[TextContent]:
+    """Full global Mesh Properties (near/far wavelength + box edge + min cell)."""
+    mesh_type = arguments.get("mesh_type", "Hexahedral")
+    if mesh_type not in _MESH_TYPE_MAP:
+        raise ValueError(f"Invalid mesh_type '{mesh_type}'. Valid: {list(_MESH_TYPE_MAP)}")
+
+    near_wave = int(arguments.get("steps_per_wave_near", 10))
+    far_wave = int(arguments.get("steps_per_wave_far", 15))
+    same_near = bool(arguments.get("same_as_near_wavelength", False))
+    near_box = int(arguments.get("steps_per_box_near", 15))
+    far_box = int(arguments.get("steps_per_box_far", 15))
+    ratio_geom = float(arguments.get("ratio_limit_geometry", 10))
+    edge_on = bool(arguments.get("edge_refinement", True))
+    edge_ratio = float(arguments.get("edge_refinement_ratio", 2))
+
+    validate_positive(near_wave, "steps_per_wave_near")
+    validate_positive(far_wave, "steps_per_wave_far")
+    validate_positive(near_box, "steps_per_box_near")
+    validate_positive(far_box, "steps_per_box_far")
+    validate_positive(ratio_geom, "ratio_limit_geometry")
+    validate_positive(edge_ratio, "edge_refinement_ratio")
+
+    mesh_cmd, settings_type = _MESH_TYPE_MAP[mesh_type]
+    same_flag = "1" if same_near else "0"
+    edge_flag = "1" if edge_on else "0"
+
+    script = f"""
+With Mesh
+     .MeshType "{mesh_cmd}"
+     .SetCreator "High Frequency"
+End With
+With MeshSettings
+     .SetMeshType "{settings_type}"
+     .Set "Version", 1%
+     'MAX CELL - WAVELENGTH REFINEMENT
+     .Set "StepsPerWaveNear", "{near_wave}"
+     .Set "StepsPerWaveFar", "{far_wave}"
+     .Set "WavelengthRefinementSameAsNear", "{same_flag}"
+     'MAX CELL - GEOMETRY REFINEMENT
+     .Set "StepsPerBoxNear", "{near_box}"
+     .Set "StepsPerBoxFar", "{far_box}"
+     .Set "MaxStepNear", "0"
+     .Set "MaxStepFar", "0"
+     .Set "ModelBoxDescrNear", "maxedge"
+     .Set "ModelBoxDescrFar", "maxedge"
+     .Set "UseMaxStepAbsolute", "0"
+     .Set "GeometryRefinementSameAsNear", "1"
+     'MIN CELL
+     .Set "UseRatioLimitGeometry", "1"
+     .Set "RatioLimitGeometry", "{_fmt(ratio_geom)}"
+     .Set "MinStepGeometryX", "0"
+     .Set "MinStepGeometryY", "0"
+     .Set "MinStepGeometryZ", "0"
+     .Set "UseSameMinStepGeometryXYZ", "1"
+End With
+With MeshSettings
+     .SetMeshType "{settings_type}"
+     .Set "EdgeRefinementOn", "{edge_flag}"
+     .Set "EdgeRefinementPolicy", "1"
+     .Set "EdgeRefinementRatio", "{_fmt(edge_ratio)}"
+     .Set "EdgeRefinementStep", "0"
+     .Set "EdgeRefinementBufferLines", "3"
+End With
+""".strip()
+
+    result = client.execute_vba(script, history_label="set mesh properties (global near/far)")
+    result.update(
+        {
+            "mesh_type": mesh_type,
+            "steps_per_wave_near": near_wave,
+            "steps_per_wave_far": far_wave,
+            "steps_per_box_near": near_box,
+            "ratio_limit_geometry": ratio_geom,
+        }
+    )
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+def _fmt(v: float) -> str:
+    if float(v) == int(v):
+        return str(int(v))
+    return f"{v:g}"
+
+
+# Map user volume_refinement -> CST VolumeRefinementType + value key
+_VOL_TYPE = {
+    "none": ("NONE", "VolumeRefinementStep"),
+    "absolute": ("ABSOLUTE", "VolumeRefinementStep"),
+    "fraction": ("FRACTION_OF_MAX", "VolumeRefinementStep"),
+    "cells_across": ("STEPS_PER_DIM", "VolumeRefinementNumSteps"),
+    "ratio": ("RATIO", "VolumeRefinementRatio"),
+}
+
+
+def _set_local_mesh_properties(arguments: dict, client: CSTClient) -> list[TextContent]:
+    """Local Mesh Properties via mesh group (official CST pattern).
+
+    Order matters (from CST ConfigurationWizard / demo macros):
+      1) Mesh.MeshType + MeshSettings.SetMeshType "Hex"
+      2) Group.Add mesh group
+      3) optional Group.AddItem solid
+      4) MeshSettings.ItemMeshSettings("group$...") settings
+    """
+    component = arguments.get("component") or ""
+    solid = arguments.get("solid") or ""
+    mesh_group = arguments.get("mesh_group") or ""
+    vol = arguments.get("volume_refinement", "none")
+    vol_val = float(arguments.get("volume_value", 2))
+    edge = arguments.get("edge_refinement", "none")
+    edge_val = float(arguments.get("edge_value", 2))
+    consider_global = bool(arguments.get("consider_global_refinement", True))
+    mesh_type = arguments.get("mesh_type", "Hex")
+
+    if vol not in _VOL_TYPE:
+        raise ValueError(f"Invalid volume_refinement '{vol}'. Valid: {list(_VOL_TYPE)}")
+    if edge not in ("none", "ratio", "steps"):
+        raise ValueError(f"Invalid edge_refinement '{edge}'. Valid: none, ratio, steps")
+    if mesh_type not in ("Hex", "HexTLM", "PBA", "Tet"):
+        raise ValueError(f"Invalid mesh_type '{mesh_type}'. Valid: Hex, HexTLM, PBA, Tet")
+    validate_positive(vol_val, "volume_value")
+    validate_positive(edge_val, "edge_value")
+
+    if not mesh_group:
+        if component and solid:
+            mesh_group = f"mg_{component}_{solid}".replace(":", "_")
+        else:
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "status": "error",
+                            "message": "Provide mesh_group, or both component and solid",
+                        },
+                        indent=2,
+                    ),
+                )
+            ]
+    else:
+        validate_name(mesh_group, "mesh_group")
+
+    if component and solid:
+        validate_name(component, "component")
+        validate_name(solid, "solid")
+        solid_key = f"solid${component}:{solid}"
+    else:
+        solid_key = None
+
+    # Map user types to CST keys used in official examples
+    if vol == "absolute":
+        # GUI Absolute value: max cell size mm (same xyz)
+        vol_sets = [
+            f'.Set "VolumeRefinementType", "ABSOLUTE"',
+            f'.Set "Step", "{_fmt(vol_val)}", "{_fmt(vol_val)}", "{_fmt(vol_val)}"',
+        ]
+    elif vol == "fraction":
+        vol_sets = [
+            f'.Set "VolumeRefinementType", "FRACTION"',
+            f'.Set "VolumeRefinementStep", "{_fmt(vol_val)}", "{_fmt(vol_val)}", "{_fmt(vol_val)}"',
+            f'.Set "VolumeRefinementValueUseSameXYZ", 1',
+        ]
+    elif vol == "cells_across":
+        vol_sets = [
+            f'.Set "VolumeRefinementType", "STEPS_PER_DIM"',
+            f'.Set "VolumeRefinementExtentType", "STEPS_PER_DIM"',
+            f'.Set "VolumeRefinementExtentNumSteps", {_fmt(vol_val)}, {_fmt(vol_val)}, {_fmt(vol_val)}',
+            f'.Set "VolumeRefinementExtentValueUseSameXYZ", 1',
+        ]
+    elif vol == "ratio":
+        vol_sets = [
+            f'.Set "VolumeRefinementType", "RATIO"',
+            f'.Set "VolumeRefinementRatio", "1", "{_fmt(vol_val)}", "{_fmt(vol_val)}"',
+            f'.Set "VolumeRefinementValueUseSameXYZ", 0',
+        ]
+    else:  # none
+        vol_sets = [f'.Set "VolumeRefinementType", "NONE"']
+
+    if edge == "ratio":
+        edge_sets = [
+            f'.Set "UseEdgeRefinement", 1',
+            f'.Set "EdgeRefinementType", "RATIO"',
+            f'.Set "EdgeRefinementRatio", "{_fmt(edge_val)}"',
+        ]
+    elif edge == "steps":
+        edge_sets = [
+            f'.Set "UseEdgeRefinement", 1',
+            f'.Set "EdgeRefinementType", "STEPS"',
+            f'.Set "EdgeRefinementStep", "{_fmt(edge_val)}"',
+        ]
+    else:
+        edge_sets = [f'.Set "EdgeRefinementType", "NONE"']
+
+    cons = "1" if consider_global else "0"
+    mesh_cmd = "PBA" if mesh_type in ("Hex", "PBA") else (
+        "HexahedralTLM" if mesh_type == "HexTLM" else mesh_type
+    )
+
+    lines = [
+        f"With Mesh",
+        f'     .MeshType "{mesh_cmd}"',
+        f"End With",
+        f"With MeshSettings",
+        f'     .SetMeshType "{mesh_type}"',
+        f"End With",
+        f'Group.Add "{_escape(mesh_group)}", "mesh"',
+    ]
+    if solid_key:
+        lines.append(f'Group.AddItem "{_escape(solid_key)}", "{_escape(mesh_group)}"')
+
+    lines += [
+        "With MeshSettings",
+        f'     With .ItemMeshSettings ("group${_escape(mesh_group)}")',
+        f'          .SetMeshType "{mesh_type}"',
+        f'          .Set "ConsiderGlobalRefinement", {cons}',
+        f'          .Set "ConsiderGlobalEdgeRefinement", {cons}',
+        f'          .Set "ConsiderGlobalFaceRefinement", {cons}',
+        f'          .Set "ConsiderGlobalMaterialRefinement", {cons}',
+    ]
+    for s in vol_sets + edge_sets:
+        lines.append(f"          {s}")
+    lines += [
+        "     End With",
+        "End With",
+    ]
+
+    script = "\n".join(lines)
+    label = f"set local mesh properties for group {mesh_group}"
+    result = client.execute_vba(script, history_label=label)
+    result.update(
+        {
+            "mesh_group": mesh_group,
+            "solid_key": solid_key,
+            "volume_refinement": vol,
+            "volume_value": vol_val,
+            "edge_refinement": edge,
+            "mesh_type": mesh_type,
+            "vba": script,
+        }
+    )
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+def _escape(s: str) -> str:
+    return s.replace('"', '""')
 
 
 def register_mesh_tools(server: Server, client: CSTClient) -> None:

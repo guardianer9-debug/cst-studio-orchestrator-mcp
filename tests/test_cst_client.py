@@ -80,7 +80,7 @@ class TestExecuteVbaSilentOffline:
 
     def test_returns_silent_message(self, offline_client: CSTClient):
         result = offline_client.execute_vba_silent("Sub Main()\nEnd Sub")
-        assert "silent" in result.get("message", "").lower()
+        assert "no cst execution" in result.get("message", "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +252,8 @@ class TestExecuteVbaConnected:
             assert result["status"] == "executed"
             mock_client._project.model3d.add_to_history.assert_called_once()
 
-    def test_starts_and_stops_dialog_watcher(self, mock_client: CSTClient):
-        """DialogWatcher should start before and stop after VBA execution."""
+    def test_never_starts_global_dialog_watcher(self, mock_client: CSTClient):
+        """Execution must not approve dialogs in other CST instances."""
         mock_client._project.model3d.add_to_history.return_value = None
 
         with patch("mcp_cst_studio.cst_client.DialogWatcher") as MockWatcher:
@@ -262,11 +262,11 @@ class TestExecuteVbaConnected:
             MockWatcher.return_value = watcher_instance
 
             mock_client.execute_vba('Brick.Reset')
-            watcher_instance.start.assert_called_once()
-            watcher_instance.stop.assert_called_once()
+            MockWatcher.assert_not_called()
+            MockWatcher.assert_not_called()
 
-    def test_dialog_watcher_stops_on_exception(self, mock_client: CSTClient):
-        """DialogWatcher must stop even if add_to_history raises."""
+    def test_error_does_not_trigger_global_dialog_watcher(self, mock_client: CSTClient):
+        """Errors are returned without starting a global dialog watcher."""
         mock_client._project.model3d.add_to_history.side_effect = RuntimeError("CST error")
 
         with patch("mcp_cst_studio.cst_client.DialogWatcher") as MockWatcher:
@@ -276,10 +276,10 @@ class TestExecuteVbaConnected:
 
             result = mock_client.execute_vba('Brick.Reset')
             assert result["status"] == "error"
-            watcher_instance.stop.assert_called_once()
+            MockWatcher.assert_not_called()
 
-    def test_reports_dismissed_dialogs(self, mock_client: CSTClient):
-        """If dialogs were dismissed, result should include count and log."""
+    def test_does_not_claim_automatic_dialog_acceptance(self, mock_client: CSTClient):
+        """The client must not invent dialog acceptance evidence."""
         mock_client._project.model3d.add_to_history.return_value = None
 
         with patch("mcp_cst_studio.cst_client.DialogWatcher") as MockWatcher:
@@ -291,8 +291,8 @@ class TestExecuteVbaConnected:
 
             result = mock_client.execute_vba('Brick.Reset')
             assert result["status"] == "executed"
-            assert result["dialogs_dismissed"] == 1
-            assert len(result["dialog_log"]) == 1
+            assert "dialogs_dismissed" not in result
+            MockWatcher.assert_not_called()
 
     def test_custom_history_label(self, mock_client: CSTClient):
         """execute_vba should use custom history label if provided."""
@@ -324,19 +324,19 @@ class TestExecuteVbaSilentConnected:
             assert result["status"] == "executed"
             mock_client._project.schematic.execute_vba_code.assert_called_once()
 
-    def test_starts_and_stops_dialog_watcher(self, mock_client: CSTClient):
-        """DialogWatcher should wrap schematic.execute_vba_code."""
+    def test_never_starts_global_dialog_watcher(self, mock_client: CSTClient):
+        """Schematic execution must not start a global dialog watcher."""
         with patch("mcp_cst_studio.cst_client.DialogWatcher") as MockWatcher:
             watcher_instance = MagicMock()
             watcher_instance.get_log.return_value = []
             MockWatcher.return_value = watcher_instance
 
             mock_client.execute_vba_silent("Sub Main()\nEnd Sub")
-            watcher_instance.start.assert_called_once()
-            watcher_instance.stop.assert_called_once()
+            MockWatcher.assert_not_called()
+            MockWatcher.assert_not_called()
 
-    def test_dialog_watcher_stops_on_exception(self, mock_client: CSTClient):
-        """DialogWatcher must stop even if execute_vba_code raises."""
+    def test_error_does_not_trigger_global_dialog_watcher(self, mock_client: CSTClient):
+        """Schematic errors must not trigger automatic dialog acceptance."""
         mock_client._project.schematic.execute_vba_code.side_effect = RuntimeError("err")
 
         with patch("mcp_cst_studio.cst_client.DialogWatcher") as MockWatcher:
@@ -346,4 +346,36 @@ class TestExecuteVbaSilentConnected:
 
             result = mock_client.execute_vba_silent("Sub Main()\nEnd Sub")
             assert result["status"] == "error"
-            watcher_instance.stop.assert_called_once()
+            MockWatcher.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# user excitation files
+# ---------------------------------------------------------------------------
+
+class TestUserExcitationFiles:
+    def test_write_user_excitation_file_uses_expanded_project_folder(
+        self, mock_client: CSTClient, tmp_path
+    ):
+        mock_client._project_path = str(tmp_path / "demo.cst")
+        usf_code = "Function ExcitationFunction(t As Double) As Double\nEnd Function"
+
+        result = mock_client.write_user_excitation_signal_file("signal1", usf_code)
+
+        expected = tmp_path / "demo" / "Model" / "3D" / "signal1.usf"
+        assert result["status"] == "written"
+        assert result["usf_path"] == str(expected)
+        assert expected.read_text(encoding="utf-8") == usf_code
+
+    def test_write_user_excitation_file_requires_project_path(
+        self, mock_client: CSTClient
+    ):
+        mock_client._project_path = None
+
+        result = mock_client.write_user_excitation_signal_file(
+            "signal1",
+            "Function ExcitationFunction(t As Double) As Double\nEnd Function",
+        )
+
+        assert result["status"] == "error"
+        assert "project path" in result["message"].lower()

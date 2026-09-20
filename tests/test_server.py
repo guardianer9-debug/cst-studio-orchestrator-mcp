@@ -9,6 +9,8 @@ from mcp_cst_studio.cst_client import CSTClient
 from mcp_cst_studio.config import CSTConfig
 from mcp_cst_studio.tools import ToolRegistry
 
+EXPECTED_TOOL_COUNT = 186
+
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -90,15 +92,15 @@ class TestToolRegistryAddModule:
 # ---------------------------------------------------------------------------
 
 class TestRegisterAllTools:
-    def test_register_all_tools_registers_177_tools(self, offline_client: CSTClient):
-        """register_all_tools() must register exactly 177 tools."""
+    def test_register_all_tools_registers_expected_tools(self, offline_client: CSTClient):
+        """register_all_tools() must register exactly the expected tools."""
         from mcp.server import Server
         from mcp_cst_studio.tools import register_all_tools, _registry
 
         server = Server("test-server")
         register_all_tools(server, offline_client)
 
-        assert len(_registry._tools) == 177
+        assert len(_registry._tools) == EXPECTED_TOOL_COUNT
 
     def test_register_all_tools_clears_before_registering(self, offline_client: CSTClient):
         """Calling register_all_tools twice must not double the count."""
@@ -113,7 +115,7 @@ class TestRegisterAllTools:
         register_all_tools(server2, offline_client)
         second_count = len(_registry._tools)
 
-        assert first_count == second_count == 177
+        assert first_count == second_count == EXPECTED_TOOL_COUNT
 
     def test_all_tool_names_are_unique(self, offline_client: CSTClient):
         """No two tools may share the same name."""
@@ -173,7 +175,7 @@ class TestToolNames:
 
         names = [tool.name for tool in _registry._tools]
         assert isinstance(names, list)
-        assert len(names) == 177
+        assert len(names) == EXPECTED_TOOL_COUNT
 
     def test_tool_names_contain_expected_entries(self, offline_client: CSTClient):
         from mcp.server import Server
@@ -189,14 +191,18 @@ class TestToolNames:
             "cst_save_project",
             "cst_close_project",
             "cst_connection_status",
+            "cst_automation_guardrails",
+            "cst_cable_cosimulation_status",
             "cst_schematic_call",
             "cst_schematic_connect",
             "cst_schematic_create_external_port",
             "cst_schematic_create_rlc",
+            "cst_schematic_create_transient_task",
             "cst_schematic_list",
             "cst_schematic_list_objects",
             "cst_schematic_object_methods",
             "cst_execute_vba",
+            "cst_define_user_excitation_signal",
         }
         missing = expected - names
         assert not missing, f"Expected tools not found: {missing}"

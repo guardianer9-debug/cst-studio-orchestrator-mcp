@@ -142,6 +142,84 @@ TOOLS: list[Tool] = [
         inputSchema={"type": "object", "properties": {}, "required": []},
     ),
     Tool(
+        name="cst_schematic_create_transient_task",
+        description=(
+            "Create or update a Design Studio transient SimulationTask for "
+            "field-circuit co-simulation. Connected mode calls "
+            "project.schematic.SimulationTask directly; offline mode returns "
+            "equivalent Design Studio VBA. Use this for schematic tasks such "
+            "as Tran1 because they are not stored in the 3D History List."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Task name, for example Tran1.",
+                    "default": "Tran1",
+                },
+                "tmax": {
+                    "type": ["number", "string"],
+                    "description": "Transient simulation time span.",
+                    "default": 250,
+                },
+                "samples": {
+                    "type": "integer",
+                    "description": "Number of FD samples for spectral densities.",
+                    "default": 1001,
+                },
+                "sampling_method": {
+                    "type": "string",
+                    "enum": ["Automatic", "Nyquist", "Manual", "Simulated"],
+                    "description": "Transient sampling method.",
+                    "default": "Automatic",
+                },
+                "circuit_simulator": {
+                    "type": "string",
+                    "enum": [
+                        "cosimulation",
+                        "cst",
+                        "cst - steady state",
+                        "hspice",
+                        "pspice",
+                        "ltspice",
+                    ],
+                    "description": (
+                        "SimulationTask circuit simulator. Use 'cosimulation' "
+                        "for CST transient co-simulation."
+                    ),
+                    "default": "cosimulation",
+                },
+                "sparameter_interpolation": {
+                    "type": "string",
+                    "enum": ["magnitude/phase", "real/imaginary"],
+                    "description": "S-parameter interpolation scheme for individual blocks.",
+                    "default": "magnitude/phase",
+                },
+                "combine_results": {
+                    "type": "boolean",
+                    "description": (
+                        "Enable Combine Results for field combination. Leave false "
+                        "for CST Cable Studio/CSSCHEM co-simulation unless a "
+                        "supported MWS block is selected."
+                    ),
+                    "default": False,
+                },
+                "combine_block": {
+                    "type": "string",
+                    "description": "MWS/CSSCHEM block name used for Combine Results.",
+                    "default": "CSSCHEM1",
+                },
+                "update": {
+                    "type": "boolean",
+                    "description": "Run SimulationTask.Update after creating/configuring the task.",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
         name="cst_schematic_list_objects",
         description=(
             "List public members exposed by project.schematic. Use this to discover "
@@ -355,6 +433,114 @@ def _build_connect_vba(*, net_name: str, ports: list[list[Any]], show_label: boo
     return "\n".join(lines)
 
 
+def _bool_text(value: bool) -> str:
+    return "True" if value else "False"
+
+
+def _simulation_task_settings(args: dict) -> dict[str, Any]:
+    name = validate_name(str(args.get("name", "Tran1") or "Tran1"), "name")
+    tmax = _format_scalar(args.get("tmax", 250))
+    samples = args.get("samples", 1001)
+    if not isinstance(samples, int) or samples < 1:
+        raise ValidationError("samples must be a positive integer")
+
+    sampling_method = str(args.get("sampling_method", "Automatic") or "Automatic")
+    allowed_sampling = {"Automatic", "Nyquist", "Manual", "Simulated"}
+    if sampling_method not in allowed_sampling:
+        raise ValidationError(
+            "sampling_method must be Automatic, Nyquist, Manual, or Simulated"
+        )
+
+    circuit_simulator = str(
+        args.get("circuit_simulator", "cosimulation") or "cosimulation"
+    ).lower()
+    allowed_simulators = {
+        "cosimulation",
+        "cst",
+        "cst - steady state",
+        "hspice",
+        "pspice",
+        "ltspice",
+    }
+    if circuit_simulator not in allowed_simulators:
+        raise ValidationError(
+            "circuit_simulator must be one of cosimulation, cst, "
+            "cst - steady state, hspice, pspice, or ltspice"
+        )
+
+    sparameter_interpolation = str(
+        args.get("sparameter_interpolation", "magnitude/phase") or "magnitude/phase"
+    ).lower()
+    if sparameter_interpolation not in {"magnitude/phase", "real/imaginary"}:
+        raise ValidationError(
+            "sparameter_interpolation must be magnitude/phase or real/imaginary"
+        )
+
+    combine_results = bool(args.get("combine_results", False))
+    combine_block = str(args.get("combine_block", "CSSCHEM1") or "").strip()
+    if combine_results:
+        combine_block = validate_name(combine_block or "CSSCHEM1", "combine_block")
+    update = bool(args.get("update", False))
+
+    return {
+        "name": name,
+        "tmax": tmax,
+        "samples": samples,
+        "sampling_method": sampling_method,
+        "circuit_simulator": circuit_simulator,
+        "sparameter_interpolation": sparameter_interpolation,
+        "combine_results": combine_results,
+        "combine_block": combine_block,
+        "update": update,
+    }
+
+
+def _build_transient_task_vba(
+    *,
+    name: str,
+    tmax: str,
+    samples: int,
+    sampling_method: str,
+    circuit_simulator: str,
+    sparameter_interpolation: str,
+    combine_results: bool,
+    combine_block: str,
+    update: bool,
+) -> str:
+    lines = [
+        "Sub Main",
+        "With SimulationTask",
+        ".Reset",
+        f'.Name ("{_vba_string(name)}")',
+        "If Not .DoesExist Then",
+        ".Reset",
+        '.Type ("transient")',
+        f'.Name ("{_vba_string(name)}")',
+        ".Create",
+        "End If",
+        ".Reset",
+        f'.Name ("{_vba_string(name)}")',
+        f'.SetProperty "tmax", "{_vba_string(tmax)}"',
+        f'.SetProperty "circuit simulator", "{_vba_string(circuit_simulator)}"',
+        f'.SetProperty "sampling method", "{_vba_string(sampling_method)}"',
+        f'.SetProperty "nfdsamples", "{samples}"',
+        (
+            '.SetProperty "s-parameter interpolation scheme", '
+            f'"{_vba_string(sparameter_interpolation)}"'
+        ),
+        f'.SetProperty "docombineresults", "{_bool_text(combine_results)}"',
+    ]
+    if combine_results:
+        lines.append(
+            f'.SetProperty "blocknameforcombineresults", "{_vba_string(combine_block)}"'
+        )
+    lines.append(".ValidateSetup")
+    if update:
+        lines.append(".Update")
+    lines.extend(["End With", "End Sub"])
+    return "\n".join(lines)
+
+
 def _handle_create_rlc(args: dict, client: CSTClient) -> dict:
     kind = str(args.get("kind", ""))
     spec = _rlc_spec(kind)
@@ -450,6 +636,21 @@ def _handle_connect(args: dict, client: CSTClient) -> dict:
     }
 
 
+def _handle_create_transient_task(args: dict, client: CSTClient) -> dict:
+    settings = _simulation_task_settings(args)
+
+    if client.connected:
+        return client.schematic_create_transient_task(**settings)
+
+    vba = _build_transient_task_vba(**settings)
+    return {
+        "status": "offline",
+        "vba": vba,
+        "message": "Design Studio transient SimulationTask VBA generated.",
+        "task": settings,
+    }
+
+
 def _handle_list(client: CSTClient) -> dict:
     if not client.connected:
         return {
@@ -499,6 +700,8 @@ async def handle(name: str, arguments: dict, client: CSTClient) -> list[TextCont
             return _text(_handle_create_external_port(arguments, client))
         if name == "cst_schematic_connect":
             return _text(_handle_connect(arguments, client))
+        if name == "cst_schematic_create_transient_task":
+            return _text(_handle_create_transient_task(arguments, client))
         if name == "cst_schematic_list":
             return _text(_handle_list(client))
         if name == "cst_schematic_list_objects":

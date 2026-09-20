@@ -27,11 +27,16 @@ def create_server() -> tuple[Server, CSTClient]:
 async def run_server() -> None:
     """Run the MCP server with stdio transport."""
     server, client = create_server()
-    connection = client.connect()
-    logger.info("CST client status: %s", connection)
+    from mcp_cst_studio.evidence import implementation_identity, record
+    record({"event": "server_start", "connection": "not_started",
+            "implementation_sha256": implementation_identity()})
+    logger.info("MCP ready; CST starts only on explicit project creation/open")
 
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+    finally:
+        client.disconnect()
 
 
 def main() -> None:
