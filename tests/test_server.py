@@ -9,7 +9,7 @@ from mcp_cst_studio.cst_client import CSTClient
 from mcp_cst_studio.config import CSTConfig
 from mcp_cst_studio.tools import ToolRegistry
 
-EXPECTED_TOOL_COUNT = 192
+EXPECTED_TOOL_COUNT = 193
 
 
 # ---------------------------------------------------------------------------

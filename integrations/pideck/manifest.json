@@ -1,10 +1,15 @@
 {
   "upstream": "https://github.com/ayuayue/PiDeck",
   "base_commit": "1979f98d7cab86bd627c1c386f954ae5e0e64fdd",
-  "desktop_commit": "6bf318c7f45b3abaf2f79722c4f755cb07e7025b",
+  "desktop_commit": "a430d299ba391717d82b819d241dd51ae15b6aba",
   "desktop_branch": "feat/cst-session-workbench-20260921",
   "patch": "0001-session-workbench.patch",
   "runtime": "PiDeck 0.7.1 / Pi 0.85.1",
   "simulation_policy": "paused",
-  "license_note": "PiDeck upstream is MIT; patch contains the CST integration changes."
+  "license_note": "PiDeck upstream is MIT; patch contains the CST integration changes.",
+  "patches": [
+    "0001-session-workbench.patch",
+    "0002-workbench-handoff.patch",
+    "0003-schematic-pins.patch"
+  ]
 }

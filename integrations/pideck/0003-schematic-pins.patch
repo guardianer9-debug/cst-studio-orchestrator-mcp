@@ -1,0 +1,79 @@
+From a430d299ba391717d82b819d241dd51ae15b6aba Mon Sep 17 00:00:00 2001
+From: guardianer9-debug <236944481+guardianer9-debug@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:44:01 +0800
+Subject: [PATCH] fix: keep schematic wires and API pin markers visible
+
+---
+ src/renderer/src/features/cst/CstVisuals.tsx | 5 +++--
+ src/renderer/src/i18n/rendererCopy.en-US.ts  | 4 ++--
+ src/renderer/src/i18n/rendererCopy.zh-CN.ts  | 4 ++--
+ 3 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/src/renderer/src/features/cst/CstVisuals.tsx b/src/renderer/src/features/cst/CstVisuals.tsx
+index 07934e7..e8025e0 100644
+--- a/src/renderer/src/features/cst/CstVisuals.tsx
++++ b/src/renderer/src/features/cst/CstVisuals.tsx
+@@ -113,13 +113,14 @@ export function CstSchematic({ snapshot, disabled, onEdit }: Pick<CstArtifact, "
+         {[ports[0],p].map((port,k)=>{const q=pin(port);return <g key={k}><circle cx={q[0]} cy={q[1]} r="3" fill="#0284c7"/><text x={q[0]} y={q[1]+14} fill="currentColor" fontSize="10">{String(port[2])}</text></g>;})}</g>;});})}
+       {names.map(name=>{const p=positions.get(name)!,block=blocks.find(b=>b.name===name),kind=String(block?.type_short??"Probe");const resistance=record(record(properties.find(b=>b.name===name)?.properties).Resistance);
+         return <g key={name} role="button" tabIndex={0} aria-label={name} onClick={()=>setSelection(name)} onKeyDown={e=>{if(e.key==="Enter")setSelection(name);}} className="cursor-pointer">
+-          <rect x={p[0]-49} y={p[1]-26} width="98" height="56" rx="8" fill={selected===name?"#ffedd5":"white"} stroke={selected===name?"#f97316":"#cbd5e1"}/>
++          <rect x={p[0]-(kind==="Probe"?20:43)} y={p[1]-(kind==="GND"?18:22)} width={kind==="Probe"?40:86} height="44" rx="6" fill={selected===name?"#ffedd5":"white"} stroke={selected===name?"#f97316":"#cbd5e1"}/>
+           {kind==="GND"?<path d={`M${p[0]},${p[1]-18} V${p[1]} M${p[0]-18},${p[1]} H${p[0]+18} M${p[0]-12},${p[1]+6} H${p[0]+12} M${p[0]-5},${p[1]+12} H${p[0]+5}`} stroke="#334155" strokeWidth="2"/>
+-            :kind==="RES"?<path d={`M${p[0]-43},${p[1]} h10 l7,-9 l9,18 l9,-18 l9,18 l9,-9 h10`} fill="none" stroke="#334155" strokeWidth="2"/>
++            :kind==="RES"?<path d={`M${p[0]-43},${p[1]} H${p[0]-30} l8,-9 l9,18 l9,-18 l9,18 l9,-18 l8,9 H${p[0]+43}`} fill="none" stroke="#334155" strokeWidth="2"/>
+             :kind==="Probe"?<circle cx={p[0]} cy={p[1]} r="18" fill="#e0f2fe" stroke="#0284c7"/>:<rect x={p[0]-40} y={p[1]-15} width="80" height="30" rx="4" fill="#dbeafe" stroke="#334155"/>}
+           <text x={p[0]} y={p[1]-34} textAnchor="middle" fill="currentColor" fontSize="12">{name}</text>
+           {kind==="RES"&&<text x={p[0]} y={p[1]+44} textAnchor="middle" fill="currentColor" fontSize="12">{String(resistance.value)} {String(resistance.unit)}</text>}
+         </g>;})}
++      {nets.map(net=>{const ps=list(net.ports).map(list);return ps.slice(1).map((port,i)=>{const a=pin(ps[0]),b=pin(port),mid=(a[0]+b[0])/2;return <path key={`wire-${net.name}-${i}`} d={`M${a[0]},${a[1]} H${mid} V${b[1]} H${b[0]}`} fill="none" stroke="#0284c7" strokeWidth="2"/>;});})}
+       {nets.flatMap(n=>list(n.ports).map(list)).map((port,i)=>{const p=pin(port);return <g key={`pin-${i}`}><circle cx={p[0]} cy={p[1]} r="3" fill="#0284c7"/><text x={p[0]+4} y={p[1]-5} fill="#0f172a" fontSize="11">{String(port[2])}</text></g>;})}
+     </svg>
+     <LoadEditor snapshot={snapshot} selected={selected} disabled={disabled} onEdit={onEdit}/>
+diff --git a/src/renderer/src/i18n/rendererCopy.en-US.ts b/src/renderer/src/i18n/rendererCopy.en-US.ts
+index 2e68c17..fb4de45 100644
+--- a/src/renderer/src/i18n/rendererCopy.en-US.ts
++++ b/src/renderer/src/i18n/rendererCopy.en-US.ts
+@@ -18,7 +18,7 @@ export const enUS: Record<TranslationKey, string> = {
+   "cst.taskHint": "Only existing transient tmax is editable. No Update; other task fields are read only.",
+   "cst.excitation": "Excitation, ports and probes",
+   "cst.excitationReadOnly": "Waveform, polarization and port configuration are read only in this delivery.",
+-  "cst.pinConnections": "Actual pins and connections",
++  "cst.pinConnections": "Actual connections (API pin indices)",
+   "cst.connectivityReadOnly": "Grounds, probes and nets come from actual readback. Drag-to-rewire is not supported.",
+   "cst.observedAt": "Readback observed at:",
+   "cst.readResults": "Read existing results (no solve)",
+@@ -41,7 +41,7 @@ export const enUS: Record<TranslationKey, string> = {
+   "cst.apply": "Apply and read back",
+   "cst.cadHint": "Actual CST-exported CAD surfaces. Drag to rotate, scroll to zoom. Not solver mesh.",
+   "cst.opacity": "Opacity",
+-  "cst.schematicHint": "Topology from actual Nets. See exact pin connections below; layout differs from native CST.",
++  "cst.schematicHint": "Topology from actual Nets. Numbers are API pin indices; see exact connections below. Layout differs from native CST.",
+   "cst.noResults": "No curves are bound to this revision. Reference results are not treated as new results.",
+   "cst.tab.3d": "3D model",
+   "cst.tab.mesh": "Solver mesh",
+diff --git a/src/renderer/src/i18n/rendererCopy.zh-CN.ts b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+index 69a5a3f..cf07b56 100644
+--- a/src/renderer/src/i18n/rendererCopy.zh-CN.ts
++++ b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+@@ -17,7 +17,7 @@ export const zhCN = {
+   "cst.taskHint": "仅修改已有瞬态任务的tmax；不执行Update，其余任务项只读。",
+   "cst.excitation": "激励、端口与探针",
+   "cst.excitationReadOnly": "波形、极化和端口配置本轮只读；尚未接入编辑。",
+-  "cst.pinConnections": "实际引脚与连接",
++  "cst.pinConnections": "实际连接（API引脚索引）",
+   "cst.connectivityReadOnly": "接地、探针和网络按实际读回显示；拖拽改线尚未接入。",
+   "cst.observedAt": "实际读回时间：",
+   "cst.readResults": "读取已有结果（不求解）",
+@@ -40,7 +40,7 @@ export const zhCN = {
+   "cst.apply": "修改并读回",
+   "cst.cadHint": "实际CST导出的CAD表面；拖动旋转、滚轮缩放。非求解网格。",
+   "cst.opacity": "透明度",
+-  "cst.schematicHint": "按实际Net生成的拓扑简图；引脚连接以下表为准，布局不等同原生原理图。",
++  "cst.schematicHint": "按实际Net生成的拓扑简图；数字为API引脚索引，连接以下表为准，布局不等同原生原理图。",
+   "cst.noResults": "所选版本没有已绑定的可显示曲线；旧参考结果不会自动视为该版本的新结果。",
+   "cst.tab.3d": "3D模型",
+   "cst.tab.mesh": "真实网格",
+-- 
+2.54.0.windows.1
+

@@ -76,7 +76,15 @@ class ToolRegistry:
                             "job_id": state["job_id"]}))]
                 from mcp_cst_studio.operation_policy import prepare_edit
                 prepare_edit(_c, name, args)
-                return await _h(name, args, _c)
+                result = await _h(name, args, _c)
+                if _c._config.session_dir and name in ("cst_open_project", "cst_close_project", "cst_reload_project", "cst_prepare_reference", "cst_edit_case", "cst_save_project"):
+                    from pathlib import Path
+                    from mcp_cst_studio.session_workspace import read_json, write_json
+                    info_path = Path(_c._config.session_dir) / "会话信息.json"
+                    info = read_json(info_path)
+                    info["active_project"] = _c.project_path
+                    write_json(info_path, info)
+                return result
             self._handlers[tool.name] = guarded
 
     # -- internal: wire into the MCP server --
@@ -178,6 +186,8 @@ def register_all_tools(server: Server, client: CSTClient) -> None:
     register_schematic_tools(server, client)
     register_vba_tools(server, client)
     register_case_tools(server, client)
+    from mcp_cst_studio.tools.workbench import TOOLS as workbench_tools, handle as workbench_handle
+    _registry.add_module(workbench_tools, workbench_handle, client)
 
     # Wire accumulated tools into the MCP server protocol
     _registry.install(server)

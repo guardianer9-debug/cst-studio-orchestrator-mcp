@@ -88,6 +88,9 @@ def create_app(root: Path, session_id: str, token: str, stop=None):
     from mcp_cst_studio.tools import _registry
     from mcp_cst_studio.evidence import implementation_identity, record
     server, client = create_server()
+    info = read_json(root / "会话信息.json")
+    info["active_project"] = None
+    write_json(root / "会话信息.json", info)
     manager = StreamableHTTPSessionManager(server, json_response=True, stateless=True)
     record({"event": "shared_backend_start", "session_id": session_id,
             "implementation_sha256": implementation_identity(), "simulation_policy": "paused"})
@@ -107,7 +110,7 @@ def create_app(root: Path, session_id: str, token: str, stop=None):
         tool = payload.get("tool")
         args = payload.get("arguments", {})
         allowed = {"cst_open_project", "cst_reload_project", "cst_close_project", "cst_save_project", "cst_readback",
-                   "cst_refresh_view", "cst_refresh_results", "cst_set_parameter", "cst_connection_status",
+                   "cst_refresh_view", "cst_refresh_results", "cst_set_parameter", "cst_edit_case", "cst_connection_status",
                    "cst_get_simulation_status", "cst_stop_simulation", "cst_project_tree", "cst_read_curve"}
         if tool not in allowed or not isinstance(args, dict):
             return JSONResponse({"error": "Unsupported desktop action"}, status_code=400)
@@ -130,6 +133,9 @@ def create_app(root: Path, session_id: str, token: str, stop=None):
         result = client.disconnect()
         if result.get("status") != "disconnected":
             return JSONResponse(result, status_code=409)
+        info = read_json(root / "会话信息.json")
+        info["active_project"] = None
+        write_json(root / "会话信息.json", info)
         record({"event": "shared_backend_shutdown", "session_id": session_id})
         from starlette.background import BackgroundTask
         return JSONResponse(result, background=BackgroundTask(stop) if stop else None)

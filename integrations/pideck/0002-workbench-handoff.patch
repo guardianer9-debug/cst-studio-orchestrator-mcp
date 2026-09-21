@@ -1,0 +1,695 @@
+From 880eb133680bd457b8e494170ebd6579dcc12763 Mon Sep 17 00:00:00 2001
+From: guardianer9-debug <236944481+guardianer9-debug@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 18:33:24 +0800
+Subject: [PATCH] feat: complete CST property editing and session handoff UI
+
+---
+ src/main/cst/CstWorkspaceService.ts           | 32 +++++-
+ src/main/index.ts                             |  2 +
+ src/main/sessions/SessionCatalog.ts           | 10 +-
+ src/renderer/src/features/cst/CstEditors.tsx  | 56 +++++++++++
+ .../src/features/cst/CstSessionWorkspace.tsx  | 52 ++++++----
+ src/renderer/src/features/cst/CstVisuals.tsx  | 97 +++++++++++++------
+ src/renderer/src/features/cst/selection.ts    | 11 +++
+ src/renderer/src/i18n/rendererCopy.en-US.ts   | 20 +++-
+ src/renderer/src/i18n/rendererCopy.zh-CN.ts   | 20 +++-
+ src/shared/types/cst.ts                       |  5 +-
+ tests/cstSelection.test.mjs                   | 20 ++++
+ tests/cstWorkspace.test.mjs                   | 20 +++-
+ tests/sessionCatalog.test.mjs                 | 16 +++
+ 13 files changed, 302 insertions(+), 59 deletions(-)
+ create mode 100644 src/renderer/src/features/cst/CstEditors.tsx
+ create mode 100644 src/renderer/src/features/cst/selection.ts
+ create mode 100644 tests/cstSelection.test.mjs
+
+diff --git a/src/main/cst/CstWorkspaceService.ts b/src/main/cst/CstWorkspaceService.ts
+index 9de4b46..8ac995f 100644
+--- a/src/main/cst/CstWorkspaceService.ts
++++ b/src/main/cst/CstWorkspaceService.ts
+@@ -2,11 +2,35 @@ import { execFile } from "node:child_process";
+ import { readFile, realpath } from "node:fs/promises";
+ import { join, relative, isAbsolute, dirname } from "node:path";
+ import { promisify } from "node:util";
++import { createHash } from "node:crypto";
+ import type { CstAction, CstArtifact, CstSelection, CstWorkspace } from "../../shared/types/cst";
+ 
+ const execute = promisify(execFile);
+ type SessionLocation = { projectPath: string; createdAt: number };
+ 
++/** Bound native workspaces survive draft-chat cleanup without moving Pi JSONL. */
++export async function hasCstSessionBinding(project: string, id: string): Promise<boolean> {
++  const key = createHash("sha256").update(id).digest("hex").slice(0, 24);
++  try {
++    const value: { session_id?: string } = JSON.parse(await readFile(join(project, ".cst-sessions", key + ".json"), "utf8"));
++    return value.session_id === id;
++  } catch (error) {
++    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
++    // On an I/O/format failure retain identity for recovery instead of deleting it.
++    return true;
++  }
++}
++
++/** Catalog loads before ProjectStore's deferred UI load; use the saved project map. */
++export async function retainBoundCstDraft(userData: string, projectId: string, id: string): Promise<boolean> {
++  try {
++    const projects: { id: string; path: string }[] = JSON.parse(await readFile(join(userData, "projects.json"), "utf8"));
++    if (!Array.isArray(projects)) return true;
++    const project = projects.find((p) => p.id === projectId);
++    return project ? hasCstSessionBinding(project.path, id) : false;
++  } catch { return true; } // Retain on uncertain startup I/O; never discard native-work identity.
++}
++
+ /** Native CST files stay in Python's session index; PiDeck owns only UI/IPC. */
+ export class CstWorkspaceService {
+   constructor(private readonly locate: (id: string) => SessionLocation | undefined) {}
+@@ -87,19 +111,21 @@ export class CstWorkspaceService {
+       }
+     }
+     const curves: Record<string, unknown>[] = [];
+-    if (Array.isArray(snapshot.curves)) for (const curve of snapshot.curves) {
++    const resultsStale = item.snapshot_current && item.results_current === false;
++    if (!resultsStale && Array.isArray(snapshot.curves)) for (const curve of snapshot.curves) {
+       if (typeof curve.file === "string") curves.push(JSON.parse(await readFile(await this.confined(folder, join(folder, curve.file)), "utf8")));
+     }
+-    return { snapshot, meshes, curves, historical: !item.snapshot_current };
++    return { snapshot, meshes, curves, historical: !item.snapshot_current, resultsStale };
+   }
+ 
+   /** Both human controls and Pi connect to this same session-owned dispatcher. */
+   async action(input: CstAction): Promise<unknown> {
+     await this.selected(input);
+-    const allowed = new Set(["cst_open_project", "cst_reload_project", "cst_close_project", "cst_refresh_view", "cst_refresh_results", "cst_readback", "cst_save_project", "cst_set_parameter", "cst_connection_status"]);
++    const allowed = new Set(["cst_open_project", "cst_reload_project", "cst_close_project", "cst_refresh_view", "cst_refresh_results", "cst_readback", "cst_save_project", "cst_set_parameter", "cst_edit_case", "cst_connection_status"]);
+     if (!allowed.has(input.tool) || !input.arguments || typeof input.arguments !== "object") throw new Error("CST_ACTION_NOT_ALLOWED");
+     if (["cst_open_project", "cst_reload_project"].includes(input.tool) && input.arguments.path !== input.project) throw new Error("CST_SELECTION_MISMATCH");
+     if (input.tool === "cst_save_project" && input.arguments.path) throw new Error("CST_SAVE_AS_REQUIRES_VERSION_WORKFLOW");
++    if (input.tool === "cst_edit_case" && input.arguments.expected_project !== input.project) throw new Error("CST_SELECTION_MISMATCH");
+     const raw = await this.call(input.sessionId, "mcp_cst_studio.workbench_service", "ensure");
+     if (!raw) throw new Error("CST_NOT_CONFIGURED");
+     const backend: { url: string; token: string; session_id: string } = JSON.parse(raw);
+diff --git a/src/main/index.ts b/src/main/index.ts
+index d285fdb..ed05e50 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -1,3 +1,4 @@
++import { retainBoundCstDraft } from "./cst/CstWorkspaceService";
+ import { registerCstIpc } from "./ipc/cstIpc";
+ import {
+ 	app,
+@@ -2757,6 +2758,7 @@ app.whenReady().then(async () => {
+ 			if (!project) return filePath;
+ 			return toAbsoluteSessionPath(filePath, project.path, environment);
+ 		},
++		(entry) => retainBoundCstDraft(app.getPath("userData"), entry.projectId, entry.id),
+ 	);
+ 	await sessionCatalog.load();
+ 	sessionRuntimeCoordinator = new SessionRuntimeCoordinator(
+diff --git a/src/main/sessions/SessionCatalog.ts b/src/main/sessions/SessionCatalog.ts
+index b5edb19..1ce243c 100644
+--- a/src/main/sessions/SessionCatalog.ts
++++ b/src/main/sessions/SessionCatalog.ts
+@@ -131,6 +131,7 @@ export class SessionCatalog {
+ 		private readonly filePath: string,
+ 		identityContext: SessionCatalogContext = {},
+ 		private readonly resolveFilePath?: SessionFilePathResolver,
++		private readonly retainDraft?: (entry: SessionCatalogEntry) => Promise<boolean>,
+ 	) {
+ 		this.identityContext = { ...identityContext };
+ 	}
+@@ -166,9 +167,14 @@ export class SessionCatalog {
+ 		}
+ 		// Draft 只代表当前进程中的“尚未发送”编辑面：没有用户消息就没有
+ 		// 可恢复的 Pi session。重启时清掉它们，避免空 Agent 在历史列表中永久残留。
+-		const staleDrafts = this.entries.filter((entry) => entry.status === "draft");
++		// A draft may already own native engineering files, even before a Pi prompt.
++		const staleDrafts: SessionCatalogEntry[] = [];
++		for (const entry of this.entries) {
++			if (entry.status === "draft" && !(await this.retainDraft?.(entry))) staleDrafts.push(entry);
++		}
+ 		if (staleDrafts.length > 0) {
+-			this.entries = this.entries.filter((entry) => entry.status !== "draft");
++			const staleIds = new Set(staleDrafts.map((entry) => entry.id));
++			this.entries = this.entries.filter((entry) => !staleIds.has(entry.id));
+ 			try {
+ 				await this.writeSnapshot(this.entries);
+ 			} catch {
+diff --git a/src/renderer/src/features/cst/CstEditors.tsx b/src/renderer/src/features/cst/CstEditors.tsx
+new file mode 100644
+index 0000000..299004c
+--- /dev/null
++++ b/src/renderer/src/features/cst/CstEditors.tsx
+@@ -0,0 +1,56 @@
++import type { CstEdit } from "../../../../shared/types/cst";
++import { t } from "../../i18n";
++
++export function object(value: unknown): Record<string, unknown> {
++  return value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {};
++}
++export function array(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
++export type EditProps = { disabled: boolean; onEdit: (edit: CstEdit) => void };
++
++/** The unit is taken from CST readback and is never silently converted. */
++export function ValueEditor({ label, value, edit, disabled, onEdit }: EditProps & { label: string; value: unknown; edit: Omit<CstEdit, "value"> }) {
++  return <form className="my-2 flex flex-wrap items-center gap-2 text-sm" data-testid={`edit-${edit.target}-${edit.property}`}
++    onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); onEdit({ ...edit, value: String(form.get("value")) }); }}>
++    <label className="flex items-center gap-2">{label}<input name="value" aria-label={`${edit.target}.${edit.property}`} key={String(value)} defaultValue={String(value)} disabled={disabled} required
++      className="w-28 rounded border bg-background px-2 py-1 disabled:opacity-50" /></label>
++    <span>{edit.unit}</span><button className="rounded border px-2 py-1 disabled:opacity-40" disabled={disabled}>{t("cst.apply")}</button>
++  </form>;
++}
++
++export function LoadEditor({ snapshot, selected, disabled, onEdit }: EditProps & { snapshot: Record<string, unknown>; selected: string }) {
++  const block = array(object(snapshot.schematic).blocks).map(object).find((b) => b.name === selected);
++  const item = array(snapshot.block_properties).map(object).find((b) => b.name === selected);
++  const properties = object(item?.properties);
++  const supported = new Set(["Resistance", "Parasitic Capacitance", "Parasitic Inductance", "Shunt Resistance", "Shunt Capacitance"]);
++  return <div className="mt-3 rounded border p-3"><strong>{selected}</strong><p className="text-xs">{String(block?.type_name ?? t("cst.probe"))}</p>
++    {Object.entries(properties).map(([name, raw]) => { const p = object(raw); return block?.type_short === "RES" && supported.has(name) && p.type === "double"
++      ? <ValueEditor key={name} label={name} value={p.value} edit={{ kind: "load", target: selected, property: name, unit: String(p.unit) }} disabled={disabled} onEdit={onEdit} />
++      : <p key={name} className="text-xs">{name}: {String(p.value)} {String(p.unit ?? "")}</p>; })}
++    <p className="mt-2 text-xs text-muted-foreground">{t("cst.loadHint")}</p>
++  </div>;
++}
++
++export function CstSettings({ snapshot, disabled, onEdit }: EditProps & { snapshot: Record<string, unknown> }) {
++  const units = object(snapshot.units), frequency = object(snapshot.frequency);
++  return <div className="space-y-4">
++    <section className="rounded border p-3"><strong>{t("cst.parameters")}</strong>
++      {array(object(snapshot.parameters).parameters).map(object).map((p) => <ValueEditor key={String(p.name)} label={String(p.name)} value={p.expression}
++        edit={{ kind: "parameter", target: String(p.name), property: "expression" }} disabled={disabled} onEdit={onEdit} />)}
++    </section>
++    <section className="rounded border p-3"><strong>{String(snapshot.solver)}</strong><p className="text-xs">{JSON.stringify(units)}</p>
++      {["min", "max"].map((name) => <ValueEditor key={name} label={name === "min" ? t("cst.freqMin") : t("cst.freqMax")} value={frequency[name]}
++        edit={{ kind: "frequency", target: "Solver", property: name, unit: String(units.Frequency) }} disabled={disabled} onEdit={onEdit} />)}
++      <p className="text-xs text-muted-foreground">{t("cst.solverReadOnly")}</p>
++    </section>
++    {array(snapshot.tasks).map(object).map((task) => <section key={String(task.name)} className="rounded border p-3">
++      <strong>{String(task.name)} · {String(task.type)}</strong>
++      {String(task.type).toLowerCase() === "transient" && <ValueEditor label="tmax" value={object(task.properties).tmax}
++        edit={{ kind: "task", target: String(task.name), property: "tmax", unit: String(units.Time) }} disabled={disabled} onEdit={onEdit} />}
++      <dl className="text-xs">{Object.entries(object(task.properties)).filter(([name]) => name !== "tmax").map(([name,value]) => <div key={name}><dt className="inline font-medium">{name}: </dt><dd className="inline">{String(value)}</dd></div>)}</dl>
++      <p className="mt-2 text-xs text-muted-foreground">{t("cst.taskHint")}</p>
++    </section>)}
++    <section className="rounded border p-3"><strong>{t("cst.excitation")}</strong><pre className="whitespace-pre-wrap text-xs">{JSON.stringify({ plane_wave: snapshot.plane_wave, signals: snapshot.user_signals, ports: snapshot.ports, probes: snapshot.field_probes }, null, 2)}</pre>
++      <p className="text-xs text-muted-foreground">{t("cst.excitationReadOnly")}</p>
++    </section>
++  </div>;
++}
+diff --git a/src/renderer/src/features/cst/CstSessionWorkspace.tsx b/src/renderer/src/features/cst/CstSessionWorkspace.tsx
+index 5857e94..8e4ee61 100644
+--- a/src/renderer/src/features/cst/CstSessionWorkspace.tsx
++++ b/src/renderer/src/features/cst/CstSessionWorkspace.tsx
+@@ -1,8 +1,10 @@
+ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+-import type { CstArtifact, CstWorkspace } from "../../../../shared/types/cst";
++import type { CstArtifact, CstWorkspace, CstEdit } from "../../../../shared/types/cst";
+ import { desktopApi as api } from "../../desktopApi";
+ import { t } from "../../i18n";
+ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui-shadcn/resizable";
++import { CstSettings } from "./CstEditors";
++import { chooseCstProject } from "./selection";
+ import { CstCad, CstCurves, CstSchematic, list, record } from "./CstVisuals";
+ 
+ /** The session key remounts this owner, so late responses cannot retarget another chat. */
+@@ -20,15 +22,28 @@ function SessionWorkbench({ sessionId, children }: { sessionId: string; children
+   const [message, setMessage] = useState("");
+   const generation = useRef(0);
+   const alive = useRef(true);
++  const followActive = useRef(true);
++  const lastIndex = useRef("");
++  const refreshing = useRef(false);
+   useEffect(() => { alive.current = true; return () => { alive.current = false; generation.current++; }; }, []);
+   const reload = useCallback(async () => {
++    if (refreshing.current) return;
++    refreshing.current = true;
+     const current = ++generation.current;
++    try {
+     const value = await api.cst.index(sessionId);
+     if (!alive.current || current !== generation.current) return;
+-    setIndex(value);
+-    setSelected((old) => value?.projects.some((p) => p.path === old) ? old : value?.recommended_project ?? value?.projects[0]?.path ?? "");
++    const signature = JSON.stringify(value);
++    if (signature !== lastIndex.current) { lastIndex.current = signature; setIndex(value); }
++    setSelected((old) => chooseCstProject(value, old, followActive.current));
++    } finally { refreshing.current = false; }
+   }, [sessionId]);
+-  useEffect(() => { void reload().catch((e) => setMessage(String(e))); }, [reload]);
++  useEffect(() => {
++    const refresh = () => { if (!document.hidden) void reload().catch((e) => { if (alive.current) setMessage(String(e)); }); };
++    refresh(); const timer = window.setInterval(refresh, 4000);
++    return () => window.clearInterval(timer);
++  }, [reload]);
++  const item = index?.projects.find((p) => p.path === selected);
+   useEffect(() => {
+     let cancelled = false;
+     setArtifact(null);
+@@ -36,19 +51,23 @@ function SessionWorkbench({ sessionId, children }: { sessionId: string; children
+       if (!cancelled) setArtifact(data);
+     }).catch((e) => { if (!cancelled) setMessage(String(e)); });
+     return () => { cancelled = true; };
+-  }, [sessionId, selected, index]);
+-  const item = index?.projects.find((p) => p.path === selected);
++  }, [sessionId, selected, item?.snapshot, item?.snapshot_current, item?.results_current, item?.historical_snapshot]);
+   async function act(tool: string, args: Record<string, unknown> = {}) {
+     setBusy(true); setMessage("");
+     try {
+       const result = record(await api.cst.action({ sessionId, project: selected, tool, arguments: args }));
+       const content = list(result.content).map(record);
+       setMessage(content.map((c) => String(c.text ?? "")).join("\n"));
++      followActive.current = true;
+       await reload();
+       if (alive.current && typeof result.active_project === "string") setSelected(result.active_project);
+     } catch (e) { if (alive.current) setMessage(String(e)); }
+     finally { if (alive.current) setBusy(false); }
+   }
++  function edit(value: CstEdit) {
++    if (!item) return;
++    void act("cst_edit_case", { ...value, expected_project: selected, expected_sha256: item.sha256, operation_id: crypto.randomUUID() });
++  }
+   const button = "rounded border px-2 py-1 text-xs disabled:opacity-40";
+   if (!index) return <>{children}</>;
+   const body = <section className="flex h-full min-h-0 flex-col overflow-hidden bg-background" data-testid="cst-workbench">
+@@ -60,11 +79,13 @@ function SessionWorkbench({ sessionId, children }: { sessionId: string; children
+     </div>
+     <div className="space-y-2 border-b p-2 text-xs">
+       <p className="break-all text-muted-foreground">{index.directory}</p>
+-      <select className="w-full rounded border bg-background p-1" value={selected} disabled={busy} onChange={(e) => setSelected(e.target.value)}>
++      <select className="w-full rounded border bg-background p-1" value={selected} disabled={busy} onChange={(e) => { followActive.current = false; setSelected(e.target.value); }}>
+         {index.projects.map((p) => <option key={p.path} value={p.path}>{p.label}</option>)}
+       </select>
++      <button className={button} onClick={() => { followActive.current = true; void reload(); }}>{t("cst.followActive")}</button>
+       <p className="break-all" data-testid="cst-project-path">{selected}</p>
+       <p>{t("cst.paused")}</p>
++      {index.active_project !== selected && <p className="text-amber-600">{t("cst.openBeforeEdit")}</p>}
+       <div className="flex flex-wrap gap-2">
+         <button className={button} disabled={!item} onClick={() => void api.cst.reveal({ sessionId, project: selected }).catch((e) => setMessage(String(e)))}>{t("cst.locate")}</button>
+         <button className={button} disabled={busy || !item} onClick={() => void act("cst_open_project", { path: selected })}>{t("cst.connect")}</button>
+@@ -77,23 +98,16 @@ function SessionWorkbench({ sessionId, children }: { sessionId: string; children
+       <p>{item?.result_origin} · {item?.result_binding} · {item?.result_note}</p>
+       {artifact?.historical && <p className="text-amber-500">{t("cst.historical")}</p>}
+       {artifact && <p>{t("cst.observedAt")} {new Date(Number(artifact.snapshot.read_at) * 1000).toLocaleString()}</p>}
+-      {message && <details open><summary>{t("cst.receipt")}</summary><pre className="max-h-36 overflow-auto whitespace-pre-wrap">{message}</pre></details>}
++      {message && <details><summary>{t("cst.receipt")}</summary><pre className="max-h-36 overflow-auto whitespace-pre-wrap">{message}</pre></details>}
+     </div>
+     <nav className="flex gap-2 border-b p-2">{[{name:"3d",label:t("cst.tab.3d")},{name:"mesh",label:t("cst.tab.mesh")},{name:"schematic",label:t("cst.tab.schematic")},{name:"settings",label:t("cst.tab.settings")},{name:"results",label:t("cst.tab.results")}].map(({name,label}) => <button key={name} className={`${button} ${tab === name ? "bg-accent" : ""}`} onClick={() => setTab(name)}>{label}</button>)}</nav>
+     <div className="min-h-0 flex-1 overflow-auto p-3">
+       {!artifact ? <p className="text-sm">{t("cst.noSnapshot")}</p> : <>
+-        {tab === "3d" && <CstCad meshes={artifact.meshes} cable={artifact.snapshot.cable} />}
+-        {tab === "schematic" && <CstSchematic snapshot={artifact.snapshot} />}
++        {tab === "3d" && <CstCad meshes={artifact.meshes} cable={artifact.snapshot.cable} solids={artifact.snapshot.solids} unit={String(record(artifact.snapshot.units).Length ?? "")} />}
++        {tab === "schematic" && <CstSchematic snapshot={artifact.snapshot} disabled={busy || artifact.historical || index.active_project !== selected} onEdit={edit} />}
+         {tab === "mesh" && <><p>{t("cst.meshPending")}</p><pre>{JSON.stringify({ cells: artifact.snapshot.mesh_cells, source: "CST readback" }, null, 2)}</pre></>}
+-        {tab === "results" && <CstCurves curves={artifact.curves} />}
+-        {tab === "settings" && <>
+-          <p className="text-xs">{t("cst.parameterHint")}</p>
+-          {list(record(artifact.snapshot.parameters).parameters).map((p) => { const param = record(p); return <form key={String(param.name)} className="my-2 flex gap-2 text-xs"
+-            onSubmit={(e) => { e.preventDefault(); const data = new FormData(e.currentTarget); void act("cst_set_parameter", { name: param.name, value: data.get("value") }); }}>
+-            <label>{String(param.name)}<input name="value" className="ml-2 rounded border bg-background p-1" defaultValue={String(param.expression)} key={String(param.expression)} /></label>
+-            <button className={button} disabled={busy || artifact.historical}>{t("cst.apply")}</button></form>; })}
+-          <pre className="whitespace-pre-wrap text-xs">{JSON.stringify({ units: artifact.snapshot.units, frequency: artifact.snapshot.frequency, solver: artifact.snapshot.solver, tasks: artifact.snapshot.tasks, plane_wave: artifact.snapshot.plane_wave, probes: artifact.snapshot.field_probes }, null, 2)}</pre>
+-        </>}
++        {tab === "results" && (artifact.resultsStale ? <p>{t("cst.resultsChanged")}</p> : <CstCurves curves={artifact.curves} />)}
++        {tab === "settings" && <CstSettings snapshot={artifact.snapshot} disabled={busy || artifact.historical || index.active_project !== selected} onEdit={edit} />}
+       </>}
+     </div>
+   </section>;
+diff --git a/src/renderer/src/features/cst/CstVisuals.tsx b/src/renderer/src/features/cst/CstVisuals.tsx
+index 2ba37a3..07934e7 100644
+--- a/src/renderer/src/features/cst/CstVisuals.tsx
++++ b/src/renderer/src/features/cst/CstVisuals.tsx
+@@ -1,5 +1,6 @@
+ import { useEffect, useRef, useState } from "react";
+ import type { CstArtifact } from "../../../../shared/types/cst";
++import { LoadEditor, type EditProps } from "./CstEditors";
+ import { t } from "../../i18n";
+ 
+ export function record(value: unknown): Record<string, unknown> {
+@@ -8,18 +9,22 @@ export function record(value: unknown): Record<string, unknown> {
+ export function list(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
+ 
+ /** Orthographic CAD preview from real STL triangles, never a solver-mesh surrogate. */
+-export function CstCad({ meshes, cable }: Pick<CstArtifact, "meshes"> & { cable?: unknown }) {
++export function CstCad({ meshes, cable, solids, unit }: Pick<CstArtifact, "meshes"> & { cable?: unknown; solids?: unknown; unit: string }) {
+   const canvas = useRef<HTMLCanvasElement>(null);
+   const [angle, setAngle] = useState([.6, -.55]);
+   const [hidden, setHidden] = useState<string[]>([]);
+   const [opacity, setOpacity] = useState(.3);
+   const [zoom, setZoom] = useState(1);
++  const [selected, setSelected] = useState("");
++  const [objectOpacity, setObjectOpacity] = useState<Record<string, number>>({});
++  const hitPaths = useRef<{path: Path2D; name: string}[]>([]);
++  const pointerStart = useRef([0, 0]);
+   useEffect(() => {
+     const element = canvas.current;
+     if (!element) return;
+     const ctx = element.getContext("2d");
+     if (!ctx) return;
+-    ctx.clearRect(0, 0, 900, 580);
++    ctx.clearRect(0, 0, 900, 580); hitPaths.current = [];
+     const all = meshes.flatMap((m) => m.vertices);
+     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+     all.forEach((v, i) => { min[i % 3] = Math.min(min[i % 3], v); max[i % 3] = Math.max(max[i % 3], v); });
+@@ -33,15 +38,16 @@ export function CstCad({ meshes, cable }: Pick<CstArtifact, "meshes"> & { cable?
+     }
+     meshes.forEach((mesh, index) => {
+       if (hidden.includes(mesh.name)) return;
+-      ctx.fillStyle = `hsla(${195 + index * 35},65%,60%,${opacity})`;
+-      ctx.strokeStyle = `hsla(${195 + index * 35},75%,55%,.5)`;
++      ctx.fillStyle = `hsla(${195 + index * 35},65%,60%,${objectOpacity[mesh.name] ?? opacity})`;
++      ctx.strokeStyle = selected === mesh.name ? "#ea580c" : `hsla(${195 + index * 35},75%,55%,.5)`;
++      ctx.lineWidth = selected === mesh.name ? 2 : .6;
+       for (let n = 0; n + 8 < mesh.vertices.length; n += 9) {
+-        ctx.beginPath();
++        const hit = new Path2D(); ctx.beginPath();
+         for (let k = 0; k < 3; k++) {
+           const p = project(mesh.vertices[n + k * 3], mesh.vertices[n + k * 3 + 1], mesh.vertices[n + k * 3 + 2]);
+-          if (k === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
++          if (k === 0) { ctx.moveTo(p[0], p[1]); hit.moveTo(p[0], p[1]); } else { ctx.lineTo(p[0], p[1]); hit.lineTo(p[0], p[1]); }
+         }
+-        ctx.closePath(); ctx.fill(); ctx.stroke();
++        ctx.closePath(); ctx.fill(); ctx.stroke(); hit.closePath(); hitPaths.current.push({path:hit,name:mesh.name});
+       }
+     });
+     const harness = record(cable);
+@@ -54,38 +60,71 @@ export function CstCad({ meshes, cable }: Pick<CstArtifact, "meshes"> & { cable?
+       ctx.stroke();
+     }
+     ctx.lineWidth = 1;
+-  }, [meshes, cable, angle, hidden, opacity, zoom]);
++  }, [meshes, cable, angle, hidden, opacity, objectOpacity, selected, zoom]);
+   return <div>
+     <p className="text-xs text-muted-foreground">{t("cst.cadHint")}</p>
+     <canvas ref={canvas} width={900} height={580} className="w-full cursor-grab rounded border"
+-      onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
++      onPointerDown={(e) => { pointerStart.current = [e.clientX,e.clientY]; e.currentTarget.setPointerCapture(e.pointerId); }}
++      onPointerUp={(e) => { if (Math.hypot(e.clientX-pointerStart.current[0],e.clientY-pointerStart.current[1]) > 4) return;
++        const box=e.currentTarget.getBoundingClientRect(), ctx=e.currentTarget.getContext("2d");
++        const hit=[...hitPaths.current].reverse().find((item)=>ctx?.isPointInPath(item.path,(e.clientX-box.left)*900/box.width,(e.clientY-box.top)*580/box.height));
++        if(hit) setSelected(hit.name); }}
+       onPointerMove={(e) => { if (e.buttons === 1) setAngle((old) => [old[0] + e.movementX * .01, old[1] + e.movementY * .01]); }}
+       onWheel={(e) => setZoom((old) => Math.max(.2, Math.min(6, old * (e.deltaY > 0 ? .9 : 1.1))))} />
+-    <label className="text-xs">{t("cst.opacity")} <input type="range" min={.05} max={1} step={.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} /></label>
+-    {meshes.map((m) => <label key={m.name} className="block text-xs"><input type="checkbox" checked={!hidden.includes(m.name)}
+-      onChange={() => setHidden((old) => old.includes(m.name) ? old.filter((x) => x !== m.name) : [...old, m.name])} /> {m.name}</label>)}
++    <div className="my-2 flex flex-wrap gap-2 text-xs"><button className="rounded border p-2" onClick={() => {setHidden(meshes.map(m=>m.name));setSelected("cable");}}>{t("cst.inspectCable")}</button>
++      <button className="rounded border p-2" onClick={()=>setHidden([])}>{t("cst.showAll")}</button>
++      <label>{t("cst.opacity")} <input type="range" min={.02} max={1} step={.02} value={objectOpacity[selected] ?? opacity} onChange={(e) => selected && selected!=="cable" ? setObjectOpacity(old=>({...old,[selected]:Number(e.target.value)})) : setOpacity(Number(e.target.value))} /></label></div>
++    {meshes.map((m) => <div key={m.name} className="flex items-center gap-2 text-xs"><input aria-label={`${t("cst.visible")} ${m.name}`} type="checkbox" checked={!hidden.includes(m.name)}
++      onChange={() => setHidden((old) => old.includes(m.name) ? old.filter((x) => x !== m.name) : [...old, m.name])} />
++      <button className={`rounded px-2 py-1 ${selected===m.name?"bg-accent":""}`} onClick={()=>setSelected(m.name)}>{m.name}</button></div>)}
++    {Boolean(cable) && <button className="mt-2 rounded border px-2 py-1 text-xs" onClick={()=>setSelected("cable")}>{t("cst.cableProperties")}</button>}
++    {selected && <section className="mt-2 rounded border p-3 text-xs" data-testid="cst-object-properties"><strong>{selected} · {unit}</strong>
++      <pre className="whitespace-pre-wrap">{JSON.stringify(selected==="cable" ? cable : list(solids).map(record).find(s=>s.name===selected),null,2)}</pre></section>}
++
+   </div>;
+ }
+ 
+ /** Connection topology and pin labels come from actual CST readback, not a template. */
+-export function CstSchematic({ snapshot }: Pick<CstArtifact, "snapshot">) {
+-  const schematic = record(snapshot.schematic);
+-  const blocks = list(schematic.blocks).map(record);
+-  const probes = list(snapshot.circuit_probes).map(record);
+-  const nets = list(schematic.nets).map(record);
+-  const names = [...blocks, ...probes].map((b) => String(b.name));
+-  const positions = new Map(names.map((name, i) => [name, [110 + i % 3 * 240, 90 + Math.floor(i / 3) * 130]]));
++export function CstSchematic({ snapshot, disabled, onEdit }: Pick<CstArtifact, "snapshot"> & EditProps) {
++  const schematic=record(snapshot.schematic), blocks=list(schematic.blocks).map(record), probes=list(snapshot.circuit_probes).map(record), nets=list(schematic.nets).map(record);
++  const [selection,setSelection]=useState("");
++  const names=[...blocks,...probes].map(b=>String(b.name));
++  const selected=names.includes(selection)?selection:String(blocks.find(b=>b.type_short==="RES")?.name ?? names[0] ?? "");
++  const properties=list(snapshot.block_properties).map(record);
++  const xs=properties.map(p=>Number(p.x)), ys=properties.map(p=>Number(p.y));
++  const xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys);
++  const positions=new Map<string,number[]>();
++  blocks.forEach((b,i)=>{const p=properties.find(p=>p.name===b.name);positions.set(String(b.name),p?[90+(Number(p.x)-xmin)*700/Math.max(xmax-xmin,1),110+(Number(p.y)-ymin)*2]:[90+i*150,110]);});
++  probes.forEach(probe=>{const neighbors=nets.flatMap(n=>{const ports=list(n.ports).map(list);return ports.some(p=>p[1]===probe.name)?ports.filter(p=>p[1]!==probe.name).map(p=>positions.get(String(p[1]))).filter(p=>p!==undefined):[];});
++    positions.set(String(probe.name),neighbors.length?[neighbors.reduce((v,p)=>v+p[0],0)/neighbors.length,neighbors.reduce((v,p)=>v+p[1],0)/neighbors.length]:[450,260]);});
++  function pin(port: unknown[]) {
++    const name=String(port[1]),center=positions.get(name) ?? [0,0];const b=blocks.find(b=>b.name===name);
++    if(b?.type_short==="GND")return [center[0],center[1]-18];
++    const peers=nets.flatMap(n=>{const ps=list(n.ports).map(list);return ps.some(p=>p[1]===port[1]&&p[2]===port[2])?ps.filter(p=>p[1]!==port[1]).map(p=>positions.get(String(p[1]))?.[0]).filter(x=>x!==undefined):[];});
++    const side=peers.length?(peers.reduce((a,b)=>a+b,0)/peers.length<center[0]?-1:1):(Number(port[2])===0?-1:1);
++    return [center[0]+side*(b?43:20),center[1]];
++  }
++  const height=Math.max(260,...[...positions.values()].map(p=>p[1]+75));
+   return <div><p className="text-xs text-muted-foreground">{t("cst.schematicHint")}</p>
+-    <svg viewBox="0 0 740 450" className="w-full rounded border">
+-      {nets.map((net) => { const ports = list(net.ports).map(list); const a = positions.get(String(ports[0]?.[1])); const b = positions.get(String(ports[1]?.[1]));
+-        return a && b ? <g key={String(net.name)}><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#38bdf8" />
+-          <text x={(a[0] + b[0]) / 2} y={(a[1] + b[1]) / 2 - 7} fill="currentColor" fontSize="10">{String(net.name)}</text></g> : null; })}
+-      {names.map((name) => { const p = positions.get(name)!; return <g key={name}>
+-        <rect x={p[0] - 45} y={p[1] - 20} width="90" height="40" rx="7" fill="#172f44" stroke="#64748b" />
+-        <text x={p[0]} y={p[1] + 4} textAnchor="middle" fill="white" fontSize="12">{name}</text></g>; })}
++    <svg viewBox={`0 0 900 ${height}`} className="w-full rounded border">
++      {nets.map(net=>{const ports=list(net.ports).map(list);return ports.slice(1).map((p,i)=>{const a=pin(ports[0]),b=pin(p),mid=(a[0]+b[0])/2;return <g key={`${net.name}-${i}`}>
++        <path d={`M${a[0]},${a[1]} H${mid} V${b[1]} H${b[0]}`} fill="none" stroke="#0284c7" strokeWidth="2" />
++        <text x={mid} y={Math.min(a[1],b[1])-12} textAnchor="middle" fill="currentColor" fontSize="10">{String(net.name)}</text>
++        {[ports[0],p].map((port,k)=>{const q=pin(port);return <g key={k}><circle cx={q[0]} cy={q[1]} r="3" fill="#0284c7"/><text x={q[0]} y={q[1]+14} fill="currentColor" fontSize="10">{String(port[2])}</text></g>;})}</g>;});})}
++      {names.map(name=>{const p=positions.get(name)!,block=blocks.find(b=>b.name===name),kind=String(block?.type_short??"Probe");const resistance=record(record(properties.find(b=>b.name===name)?.properties).Resistance);
++        return <g key={name} role="button" tabIndex={0} aria-label={name} onClick={()=>setSelection(name)} onKeyDown={e=>{if(e.key==="Enter")setSelection(name);}} className="cursor-pointer">
++          <rect x={p[0]-49} y={p[1]-26} width="98" height="56" rx="8" fill={selected===name?"#ffedd5":"white"} stroke={selected===name?"#f97316":"#cbd5e1"}/>
++          {kind==="GND"?<path d={`M${p[0]},${p[1]-18} V${p[1]} M${p[0]-18},${p[1]} H${p[0]+18} M${p[0]-12},${p[1]+6} H${p[0]+12} M${p[0]-5},${p[1]+12} H${p[0]+5}`} stroke="#334155" strokeWidth="2"/>
++            :kind==="RES"?<path d={`M${p[0]-43},${p[1]} h10 l7,-9 l9,18 l9,-18 l9,18 l9,-9 h10`} fill="none" stroke="#334155" strokeWidth="2"/>
++            :kind==="Probe"?<circle cx={p[0]} cy={p[1]} r="18" fill="#e0f2fe" stroke="#0284c7"/>:<rect x={p[0]-40} y={p[1]-15} width="80" height="30" rx="4" fill="#dbeafe" stroke="#334155"/>}
++          <text x={p[0]} y={p[1]-34} textAnchor="middle" fill="currentColor" fontSize="12">{name}</text>
++          {kind==="RES"&&<text x={p[0]} y={p[1]+44} textAnchor="middle" fill="currentColor" fontSize="12">{String(resistance.value)} {String(resistance.unit)}</text>}
++        </g>;})}
++      {nets.flatMap(n=>list(n.ports).map(list)).map((port,i)=>{const p=pin(port);return <g key={`pin-${i}`}><circle cx={p[0]} cy={p[1]} r="3" fill="#0284c7"/><text x={p[0]+4} y={p[1]-5} fill="#0f172a" fontSize="11">{String(port[2])}</text></g>;})}
+     </svg>
+-    <table className="w-full text-xs"><tbody>{nets.map((n) => <tr key={String(n.name)}><td>{String(n.name)}</td><td>{list(n.ports).map((p) => list(p).join(" : ")).join(" ↔ ")}</td></tr>)}</tbody></table>
+-    <pre className="mt-3 whitespace-pre-wrap text-xs">{JSON.stringify(snapshot.block_properties, null, 2)}</pre>
++    <LoadEditor snapshot={snapshot} selected={selected} disabled={disabled} onEdit={onEdit}/>
++    <details className="mt-3" open><summary>{t("cst.pinConnections")}</summary><table className="w-full text-xs"><tbody>{nets.map(n=><tr key={String(n.name)}><td>{String(n.name)}</td><td>{list(n.ports).map(p=>list(p).join(" : ")).join(" ↔ ")}</td></tr>)}</tbody></table></details>
++    <p className="mt-2 text-xs text-muted-foreground">{t("cst.connectivityReadOnly")}</p>
+   </div>;
+ }
+ 
+@@ -99,7 +138,7 @@ export function CstCurves({ curves }: Pick<CstArtifact, "curves">) {
+     if (!x.length || x.length !== y.length) return <pre key={i}>{JSON.stringify(curve, null, 2)}</pre>;
+     const lo = Math.min(...y), hi = Math.max(...y), xmin = Math.min(...x), xmax = Math.max(...x);
+     const points = x.map((v, n) => `${50 + 630 * (v - xmin) / (xmax - xmin || 1)},${250 - 210 * (y[n] - lo) / (hi - lo || 1)}`).join(" ");
+-    return <div key={i} className="mb-4"><p className="text-xs">{String(curve.tree_path)} · CST run_id={String(curve.run_id)} {parameter ? "|S11| dB" : String(curve.quantity ?? curve.ylabel ?? "")}</p>
++    return <div key={i} className="mb-4"><p className="text-xs">{String(curve.tree_path)} · CST run_id={String(curve.run_id)} {parameter ? `|${String(curve.tree_path).split("\\").at(-1)}| dB` : String(curve.ylabel ?? curve.quantity ?? "")}</p>
+       <svg viewBox="0 0 720 290" className="w-full border"><line x1="50" y1="40" x2="50" y2="250" stroke="currentColor" /><line x1="50" y1="250" x2="680" y2="250" stroke="currentColor" />
+         <polyline points={points} fill="none" stroke="#38bdf8" strokeWidth="2" />
+         <text x="5" y="45" fill="currentColor" fontSize="12">{hi.toPrecision(4)}</text><text x="5" y="250" fill="currentColor" fontSize="12">{lo.toPrecision(4)}</text>
+diff --git a/src/renderer/src/features/cst/selection.ts b/src/renderer/src/features/cst/selection.ts
+new file mode 100644
+index 0000000..f2c2061
+--- /dev/null
++++ b/src/renderer/src/features/cst/selection.ts
+@@ -0,0 +1,11 @@
++import type { CstWorkspace } from "../../../../shared/types/cst";
++
++/** Follow committed backend versions, while explicit historical selection stays pinned. */
++export function chooseCstProject(index: CstWorkspace | null, current: string, follow: boolean): string {
++  if (!index) return "";
++  const valid = new Set(index.projects.map((p) => p.path));
++  if (!follow && valid.has(current)) return current;
++  if (follow && index.active_project && valid.has(index.active_project)) return index.active_project;
++  if (index.recommended_project && valid.has(index.recommended_project)) return index.recommended_project;
++  return valid.has(current) ? current : index.projects[0]?.path ?? "";
++}
+diff --git a/src/renderer/src/i18n/rendererCopy.en-US.ts b/src/renderer/src/i18n/rendererCopy.en-US.ts
+index a594d1b..2e68c17 100644
+--- a/src/renderer/src/i18n/rendererCopy.en-US.ts
++++ b/src/renderer/src/i18n/rendererCopy.en-US.ts
+@@ -2,6 +2,24 @@ import { mainProcessEnUS } from "../../../shared/i18n/mainProcessCopy";
+ import type { TranslationKey } from "./rendererCopy.zh-CN";
+ 
+ export const enUS: Record<TranslationKey, string> = {
++  "cst.resultsChanged": "Native results changed. Old curves are hidden; reread existing results to verify their source. The model snapshot remains available.",
++  "cst.openBeforeEdit": "The selected version is not open in the backend. Reload it before editing.",
++  "cst.followActive": "Follow active project",
++  "cst.inspectCable": "Hide solids to inspect cable",
++  "cst.showAll": "Show all solids",
++  "cst.visible": "Show",
++  "cst.cableProperties": "Cable properties/routes",
++  "cst.probe": "Probe",
++  "cst.loadHint": "Load edits create a new version. Native units are checked; verify parasitic-property semantics in the original project.",
++  "cst.parameters": "Design parameters",
++  "cst.freqMin": "Minimum frequency",
++  "cst.freqMax": "Maximum frequency",
++  "cst.solverReadOnly": "Frequency edits supported. Solver type and mesh settings are read only; no computation.",
++  "cst.taskHint": "Only existing transient tmax is editable. No Update; other task fields are read only.",
++  "cst.excitation": "Excitation, ports and probes",
++  "cst.excitationReadOnly": "Waveform, polarization and port configuration are read only in this delivery.",
++  "cst.pinConnections": "Actual pins and connections",
++  "cst.connectivityReadOnly": "Grounds, probes and nets come from actual readback. Drag-to-rewire is not supported.",
+   "cst.observedAt": "Readback observed at:",
+   "cst.readResults": "Read existing results (no solve)",
+   "cst.readManualResults": "Read my manual-run results",
+@@ -24,7 +42,7 @@ export const enUS: Record<TranslationKey, string> = {
+   "cst.cadHint": "Actual CST-exported CAD surfaces. Drag to rotate, scroll to zoom. Not solver mesh.",
+   "cst.opacity": "Opacity",
+   "cst.schematicHint": "Topology from actual Nets. See exact pin connections below; layout differs from native CST.",
+-  "cst.noResults": "No displayable results bound to this revision; no new complete 222 V/I.",
++  "cst.noResults": "No curves are bound to this revision. Reference results are not treated as new results.",
+   "cst.tab.3d": "3D model",
+   "cst.tab.mesh": "Solver mesh",
+   "cst.tab.schematic": "Schematic",
+diff --git a/src/renderer/src/i18n/rendererCopy.zh-CN.ts b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+index d080432..69a5a3f 100644
+--- a/src/renderer/src/i18n/rendererCopy.zh-CN.ts
++++ b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+@@ -1,6 +1,24 @@
+ import { mainProcessZhCN } from "../../../shared/i18n/mainProcessCopy";
+ 
+ export const zhCN = {
++  "cst.resultsChanged": "原生结果目录已变化。旧曲线已隐藏，请读取已有结果重新核对来源；模型快照仍可查看。",
++  "cst.openBeforeEdit": "选中版本尚未连接到后台；请先重新读取工程，再修改。",
++  "cst.followActive": "跟随当前工程",
++  "cst.inspectCable": "隐藏外壳，检查线缆",
++  "cst.showAll": "显示全部实体",
++  "cst.visible": "显示",
++  "cst.cableProperties": "线缆属性/路由",
++  "cst.probe": "探针",
++  "cst.loadHint": "负载修改会另存新版本；单位按CST实际属性核对，寄生属性的启用含义请核对原工程。",
++  "cst.parameters": "设计参数",
++  "cst.freqMin": "最低频率",
++  "cst.freqMax": "最高频率",
++  "cst.solverReadOnly": "本轮支持频段设置；求解器类型和网格设置仅查看，不触发计算。",
++  "cst.taskHint": "仅修改已有瞬态任务的tmax；不执行Update，其余任务项只读。",
++  "cst.excitation": "激励、端口与探针",
++  "cst.excitationReadOnly": "波形、极化和端口配置本轮只读；尚未接入编辑。",
++  "cst.pinConnections": "实际引脚与连接",
++  "cst.connectivityReadOnly": "接地、探针和网络按实际读回显示；拖拽改线尚未接入。",
+   "cst.observedAt": "实际读回时间：",
+   "cst.readResults": "读取已有结果（不求解）",
+   "cst.readManualResults": "读取我手动运行的结果",
+@@ -23,7 +41,7 @@ export const zhCN = {
+   "cst.cadHint": "实际CST导出的CAD表面；拖动旋转、滚轮缩放。非求解网格。",
+   "cst.opacity": "透明度",
+   "cst.schematicHint": "按实际Net生成的拓扑简图；引脚连接以下表为准，布局不等同原生原理图。",
+-  "cst.noResults": "此版本没有已绑定的可显示结果；没有新完整222 V/I。",
++  "cst.noResults": "所选版本没有已绑定的可显示曲线；旧参考结果不会自动视为该版本的新结果。",
+   "cst.tab.3d": "3D模型",
+   "cst.tab.mesh": "真实网格",
+   "cst.tab.schematic": "原理图",
+diff --git a/src/shared/types/cst.ts b/src/shared/types/cst.ts
+index 1c5c708..75e8a83 100644
+--- a/src/shared/types/cst.ts
++++ b/src/shared/types/cst.ts
+@@ -4,14 +4,17 @@ export type CstProject = {
+   snapshot?: string; snapshot_current: boolean; status?: string;
+   result_origin: string; result_binding: string; result_note?: string;
+   historical_snapshot?: string;
++  results_current?: boolean;
+ };
+ export type CstWorkspace = {
+   session_id: string; directory: string; entry: string; title: string;
+   recommended_project: string | null; projects: CstProject[];
++  active_project?: string | null;
+ };
++export type CstEdit = { kind: "parameter" | "load" | "frequency" | "task"; target: string; property: string; value: string; unit?: string };
+ export type CstSelection = { sessionId: string; project: string };
+ export type CstAction = CstSelection & {
+   tool: string; arguments: Record<string, unknown>;
+ };
+ export type CstArtifact = { snapshot: Record<string, unknown>; meshes: { name: string; vertices: number[] }[];
+-  curves: Record<string, unknown>[]; historical: boolean };
++  curves: Record<string, unknown>[]; historical: boolean; resultsStale?: boolean };
+diff --git a/tests/cstSelection.test.mjs b/tests/cstSelection.test.mjs
+new file mode 100644
+index 0000000..a0ce599
+--- /dev/null
++++ b/tests/cstSelection.test.mjs
+@@ -0,0 +1,20 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { readFileSync } from "node:fs";
++import vm from "node:vm";
++import ts from "typescript";
++const module = { exports: {} };
++vm.runInNewContext(ts.transpileModule(readFileSync("src/renderer/src/features/cst/selection.ts", "utf8"), {
++  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
++}).outputText, { module, exports: module.exports });
++const { chooseCstProject } = module.exports;
++
++test("Agent new version becomes selected when following the backend", () => {
++  assert.equal(chooseCstProject({ projects: [{ path: "old" }, { path: "new" }], active_project: "new", recommended_project: "old" }, "old", true), "new");
++});
++test("Historical selection does not jump when an Agent updates another version", () => {
++  assert.equal(chooseCstProject({ projects: [{ path: "old" }, { path: "new" }], active_project: "new" }, "old", false), "old");
++});
++test("A stale head cannot select another session's project", () => {
++  assert.equal(chooseCstProject({ projects: [{ path: "own" }], active_project: "foreign", recommended_project: "foreign" }, "foreign", true), "own");
++});
+diff --git a/tests/cstWorkspace.test.mjs b/tests/cstWorkspace.test.mjs
+index ca6eb13..94ff9ad 100644
+--- a/tests/cstWorkspace.test.mjs
++++ b/tests/cstWorkspace.test.mjs
+@@ -17,7 +17,7 @@ function load(fakeExec) {
+   vm.runInNewContext(output, { module, exports: module.exports, process, AbortSignal, Set,
+     require: (name) => name === "node:child_process" ? { execFile: fakeExec } : require(name),
+     fetch: () => { throw new Error("unexpected backend call"); } });
+-  return module.exports.CstWorkspaceService;
++  return module.exports;
+ }
+ 
+ test("CST index uses the stable session identity and rejects another session's project", async () => {
+@@ -28,7 +28,7 @@ test("CST index uses the stable session identity and rejects another session's p
+     await mkdir(first, { recursive: true }); await mkdir(second, { recursive: true });
+     await writeFile(join(first, "model.cst"), "native a"); await writeFile(join(second, "model.cst"), "native b");
+     const calls = [];
+-    const Service = load((_exe, args, options, callback) => {
++    const { CstWorkspaceService: Service } = load((_exe, args, options, callback) => {
+       const id = args[args.indexOf("--session") + 1]; calls.push({ id, args, options });
+       callback(null, JSON.stringify({ session_id: id, directory: id === "a" ? first : second,
+         projects: [{ path: join(id === "a" ? first : second, "model.cst") }] }), "");
+@@ -50,10 +50,24 @@ test("CST refresh refuses an artifact escaping its session and never calls a bac
+     const session = join(root, "session"); await mkdir(session);
+     const project = join(session, "x.cst"); await writeFile(project, "native");
+     const external = join(root, "external.json"); await writeFile(external, "{}");
+-    const Service = load((_exe, args, options, callback) => callback(null, JSON.stringify({ session_id: "a", directory: session,
++    const { CstWorkspaceService: Service } = load((_exe, args, options, callback) => callback(null, JSON.stringify({ session_id: "a", directory: session,
+       projects: [{ path: project, snapshot_current: true, snapshot: external }] }), ""));
+     const service = new Service(() => ({ projectPath: root, createdAt: 1000 }));
+     await assert.rejects(service.artifact({ sessionId: "a", project }), /ESCAPES_SESSION/);
+     await assert.rejects(service.action({ sessionId: "a", project, tool: "cst_run_task", arguments: {} }), /ACTION_NOT_ALLOWED/);
+   } finally { await rm(root, { recursive: true, force: true }); }
+ });
++
++
++test("CST draft retention reads persisted project roots before the UI project store loads", async () => {
++ const root=await mkdtemp(join(tmpdir(),"cst-startup-"));
++ try {
++  const project=join(root,"project");await mkdir(join(project,".cst-sessions"),{recursive:true});
++  await writeFile(join(root,"projects.json"),JSON.stringify([{id:"p",path:project}]));
++  const key=require("node:crypto").createHash("sha256").update("session").digest("hex").slice(0,24);
++  await writeFile(join(project,".cst-sessions",key+".json"),JSON.stringify({session_id:"session"}));
++  const {retainBoundCstDraft}=load(()=>{throw new Error("no subprocess during startup retention");});
++  assert.equal(await retainBoundCstDraft(root,"p","session"),true);
++  assert.equal(await retainBoundCstDraft(root,"p","empty"),false);
++ } finally {await rm(root,{recursive:true,force:true});}
++});
+diff --git a/tests/sessionCatalog.test.mjs b/tests/sessionCatalog.test.mjs
+index 3e88141..b3b7d74 100644
+--- a/tests/sessionCatalog.test.mjs
++++ b/tests/sessionCatalog.test.mjs
+@@ -120,6 +120,22 @@ test("keeps a draft desktop session ID after Pi assigns a file path", async () =
+   }
+ });
+ 
++test("retains a draft with a bound engineering workspace while cleaning empty drafts", async () => {
++  const { SessionCatalog } = loadCatalog();
++  const dir = await mkdtemp(join(tmpdir(), "pideck-engineering-draft-"));
++  try {
++    const path = join(dir, "sessions.json");
++    const catalog = new SessionCatalog(path);
++    await catalog.load();
++    const saved = await catalog.createDraft({ projectId: "p", title: "Native project", environment: "native" });
++    await catalog.createDraft({ projectId: "p", title: "Empty draft", environment: "native" });
++    const reloaded = new SessionCatalog(path, {}, undefined, async (entry) => entry.id === saved.id);
++    await reloaded.load();
++    assert.equal(reloaded.listEntries().length, 1);
++    assert.equal(reloaded.get(saved.id).title, "Native project");
++  } finally { await rm(dir, { recursive: true, force: true }); }
++});
++
+ test("uses the configured WSL identity when a draft becomes active", async () => {
+   const { SessionCatalog } = loadCatalog();
+   const dir = await mkdtemp(join(tmpdir(), "pideck-catalog-"));
+-- 
+2.54.0.windows.1
+

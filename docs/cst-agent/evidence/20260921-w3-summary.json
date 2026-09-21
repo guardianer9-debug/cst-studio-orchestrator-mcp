@@ -1,0 +1,32 @@
+{
+  "round": "W3",
+  "baseline": "f3cccdfc4d1f283649de929d49f854c4a0c81069",
+  "user_feedback": {
+    "prior_engineering_review": "basically_approved",
+    "new_results": "not_covered",
+    "numerical_accuracy": "not_covered",
+    "complete_workbench": "not_covered"
+  },
+  "developer_validation": {
+    "cavity": "UI RES1=75; actual Pi reads and sets RES2=60; UI follows; save/reopen passed",
+    "dipole": "UI L=82; actual Pi reads and sets r=1.2; UI follows; save/reopen passed"
+  },
+  "pi_request_count": {
+    "cavity": 2,
+    "dipole": 6
+  },
+  "human_interventions": "Recovery prompts, Pi runtime restarts and project guidance fix; not an unassisted one-shot benchmark",
+  "new_solver_runs": 0,
+  "new_complete_222_VI": "not_obtained",
+  "human_workbench_acceptance": "pending",
+  "numerical_validation": "not_tested",
+  "offline_tests_passed": 603,
+  "desktop_tests": {
+    "passed": 2143,
+    "skipped": 2,
+    "failed": 0
+  },
+  "actual_billed_cost": null,
+  "private_evidence": "Local session workspaces and W3 evidence index; native projects and raw Pi conversations not uploaded",
+  "desktop_commit": "a430d299ba391717d82b819d241dd51ae15b6aba"
+}

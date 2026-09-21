@@ -111,6 +111,8 @@ def readback(client: CSTClient) -> dict:
         return {"status": "offline", "message": "A live, explicitly opened project is required"}
     m = client._project.model3d
     result: dict = {"status": "ok", "project": client.project_path, "read_at": time.time(), "errors": {}}
+    if client.project_path and Path(client.project_path).is_file():
+        result["project_sha256"] = sha256(Path(client.project_path))
 
     def read(key, operation):
         try:
@@ -233,9 +235,22 @@ def read_harness(path: Path) -> dict:
             "cables": [dict(c.attrib) for c in root.findall("./Cabling/CableInstance")]}
 
 
+def view_identity(client, label: str, reproduction_kind: str) -> tuple[str, str]:
+    """A read-only refresh must not relabel a modified version as a reference."""
+    if client._config.session_dir and label in ("实际工程读回", "保存工程重新读取", "已有结果只读刷新"):
+        from mcp_cst_studio.session_workspace import read_json
+        info = read_json(Path(client._config.session_dir) / "会话信息.json")
+        item = next((p for p in info["projects"] if Path(p["path"]).resolve() == Path(client.project_path).resolve()), None)
+        if item:
+            return item["label"], item.get("reproduction_kind", reproduction_kind)
+        return f"{Path(client.project_path).parent.name} / {Path(client.project_path).name}", reproduction_kind
+    return label, reproduction_kind
+
+
 def publish_view(client: CSTClient, label: str, reproduction_kind: str, *, save: bool = True) -> dict:
     if not client.connected or not client.project_path:
         raise ValueError("Open an independent project first")
+    label, reproduction_kind = view_identity(client, label, reproduction_kind)
     if save:
         saved = client.save_project()
         if saved.get("status") != "saved":
@@ -305,6 +320,10 @@ def publish_view(client: CSTClient, label: str, reproduction_kind: str, *, save:
         item.update(snapshot=str(target), snapshot_project_sha256=snapshot["project_sha256"],
                     snapshot_results_fingerprint=results_fingerprint(Path(client.project_path)),
                     status="实际读回；人工验收待确认")
+        item["label"] = label
+        item["reproduction_kind"] = reproduction_kind
+        info["active_project"] = client.project_path
+        info["recommended_project"] = client.project_path
         write_json(session / "会话信息.json", info)
         render_entry(session)
     return {"status": "published", "snapshot": str(target), "readback_status": snapshot["status"],

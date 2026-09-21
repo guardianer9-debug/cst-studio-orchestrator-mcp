@@ -66,7 +66,7 @@ def test_tampered_binding_cannot_escape_project(tmp_path):
         bind(tmp_path, "a")
 
 
-def test_native_result_changes_invalidate_snapshot_even_if_cst_is_unchanged(tmp_path):
+def test_native_result_changes_invalidate_curves_without_hiding_unchanged_model(tmp_path):
     from mcp_cst_studio.session_workspace import digest, results_fingerprint
     root = bind(tmp_path, "results")
     project = root / "工程" / "native.cst"
@@ -80,4 +80,6 @@ def test_native_result_changes_invalidate_snapshot_even_if_cst_is_unchanged(tmp_
     write_json(root / "会话信息.json", info)
     assert inventory(root)["projects"][0]["snapshot_current"]
     result.write_bytes(b"manual new run values")
-    assert not inventory(root)["projects"][0]["snapshot_current"]
+    refreshed = inventory(root)["projects"][0]
+    assert refreshed["snapshot_current"]
+    assert not refreshed["results_current"]

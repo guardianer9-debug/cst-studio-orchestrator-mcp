@@ -77,6 +77,7 @@ def prepare_edit(client, tool: str, args: dict) -> None:
     client._unsaved_backend_edits = True
     info = read_json(root / "会话信息.json")
     info["projects"].append({"path": str(target), "label": "修改版本 / " + source.name,
+        "reproduction_kind": "modified_variant",
         "source_path": str(source), "source_sha256": old_hash, "status": "修改进行中；尚未验收",
         "result_origin": "unknown", "result_binding": "unknown", "result_note": "不沿用源版本结果的当前有效性"})
     info["recommended_project"] = str(target)

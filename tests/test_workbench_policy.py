@@ -103,3 +103,15 @@ def test_generic_edit_cannot_use_selection_changed_by_pre_readback(tmp_path):
         with pytest.raises(ValueError, match="explicit supported target_name"):
             prepare_edit(client, "cst_schematic_call", {"object_name": "Block", "method_name": "SetDoubleProperty", "args": ["Resistance", 50]})
     assert not list(tmp_path.rglob("*.cst"))
+
+
+def test_readonly_refresh_preserves_version_label_and_reproduction_kind(tmp_path):
+    from mcp_cst_studio.session_workspace import read_json, write_json
+    from mcp_cst_studio.tools.cases import view_identity
+    root = bind(tmp_path, "version-label")
+    client = CSTClient(CSTConfig(session_dir=str(root)))
+    client._project_path = str(root / "工程" / "model.cst")
+    info = read_json(root / "会话信息.json")
+    info["projects"] = [{"path": client.project_path, "label": "RES2=60 Ohm", "reproduction_kind": "modified_variant"}]
+    write_json(root / "会话信息.json", info)
+    assert view_identity(client, "保存工程重新读取", "reference_operation") == ("RES2=60 Ohm", "modified_variant")

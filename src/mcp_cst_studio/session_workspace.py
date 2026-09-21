@@ -185,8 +185,9 @@ def inventory(root: Path) -> dict:
         item["native_directory"] = str(path.with_suffix(""))
         item["native_directory_exists"] = path.with_suffix("").is_dir()
         item["snapshot_current"] = item.get("snapshot_project_sha256") == item["sha256"]
+        item["results_current"] = item["snapshot_current"]
         if item.get("snapshot_results_fingerprint"):
-            item["snapshot_current"] &= item["snapshot_results_fingerprint"] == results_fingerprint(path)
+            item["results_current"] &= item["snapshot_results_fingerprint"] == results_fingerprint(path)
         item["result_binding"] = item.get("result_binding", "unknown")
         result["projects"].append(item)
     return result
