@@ -1,0 +1,661 @@
+From 6bf318c7f45b3abaf2f79722c4f755cb07e7025b Mon Sep 17 00:00:00 2001
+From: guardianer9-debug <236944481+guardianer9-debug@users.noreply.github.com>
+Date: Mon, 21 Sep 2026 16:16:35 +0800
+Subject: [PATCH] feat: bind CST workbench to stable session workspaces
+
+---
+ src/main/cst/CstWorkspaceService.ts           | 114 ++++++++++++++++++
+ src/main/index.ts                             |   2 +
+ src/main/ipc/cstIpc.ts                        |  28 +++++
+ src/preload/index.ts                          |   8 ++
+ src/renderer/src/App.tsx                      |   3 +-
+ .../src/features/cst/CstSessionWorkspace.tsx  | 104 ++++++++++++++++
+ src/renderer/src/features/cst/CstVisuals.tsx  | 109 +++++++++++++++++
+ src/renderer/src/i18n/rendererCopy.en-US.ts   |  29 +++++
+ src/renderer/src/i18n/rendererCopy.zh-CN.ts   |  29 +++++
+ src/renderer/src/previewApi.ts                |   1 +
+ src/shared/ipc.ts                             |   5 +
+ src/shared/types/cst.ts                       |  17 +++
+ tests/cstWorkspace.test.mjs                   |  59 +++++++++
+ 13 files changed, 507 insertions(+), 1 deletion(-)
+ create mode 100644 src/main/cst/CstWorkspaceService.ts
+ create mode 100644 src/main/ipc/cstIpc.ts
+ create mode 100644 src/renderer/src/features/cst/CstSessionWorkspace.tsx
+ create mode 100644 src/renderer/src/features/cst/CstVisuals.tsx
+ create mode 100644 src/shared/types/cst.ts
+ create mode 100644 tests/cstWorkspace.test.mjs
+
+diff --git a/src/main/cst/CstWorkspaceService.ts b/src/main/cst/CstWorkspaceService.ts
+new file mode 100644
+index 0000000..9de4b46
+--- /dev/null
++++ b/src/main/cst/CstWorkspaceService.ts
+@@ -0,0 +1,114 @@
++import { execFile } from "node:child_process";
++import { readFile, realpath } from "node:fs/promises";
++import { join, relative, isAbsolute, dirname } from "node:path";
++import { promisify } from "node:util";
++import type { CstAction, CstArtifact, CstSelection, CstWorkspace } from "../../shared/types/cst";
++
++const execute = promisify(execFile);
++type SessionLocation = { projectPath: string; createdAt: number };
++
++/** Native CST files stay in Python's session index; PiDeck owns only UI/IPC. */
++export class CstWorkspaceService {
++  constructor(private readonly locate: (id: string) => SessionLocation | undefined) {}
++
++  private async context(id: string) {
++    if (typeof id !== "string" || !id) throw new Error("CST_SESSION_REQUIRED");
++    const session = this.locate(id);
++    if (!session) throw new Error("CST_SESSION_NOT_FOUND");
++    let raw: string;
++    try { raw = await readFile(join(session.projectPath, ".cst-workspace.json"), "utf8"); }
++    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return null; throw error; }
++    const config: { python: string; source: string } = JSON.parse(raw);
++    if (typeof config.python !== "string" || !isAbsolute(config.python) || typeof config.source !== "string" || !isAbsolute(config.source)) {
++      throw new Error("CST_INVALID_LOCAL_CONFIGURATION");
++    }
++    return { ...session, config };
++  }
++
++  private async call(id: string, module: string, action: string): Promise<string | null> {
++    const context = await this.context(id);
++    if (!context) return null;
++    const result = await execute(context.config.python, ["-m", module, action,
++      "--project", context.projectPath, "--session", id, "--created", String(context.createdAt / 1000)],
++      { windowsHide: true, timeout: 30000, maxBuffer: 16 * 1024 * 1024,
++        env: { ...process.env, PYTHONUTF8: "1", PYTHONPATH: context.config.source } });
++    return result.stdout;
++  }
++
++  async index(id: string): Promise<CstWorkspace | null> {
++    const raw = await this.call(id, "mcp_cst_studio.session_workspace", "inventory");
++    if (!raw) return null;
++    const value: CstWorkspace = JSON.parse(raw);
++    if (value.session_id !== id || !Array.isArray(value.projects)) throw new Error("CST_INVALID_INDEX");
++    return value;
++  }
++
++  async selected(input: CstSelection) {
++    if (!input || typeof input.sessionId !== "string" || typeof input.project !== "string") throw new Error("CST_INVALID_SELECTION");
++    const index = await this.index(input.sessionId);
++    const item = index?.projects.find((p) => p.path === input.project);
++    if (!index || !item) throw new Error("CST_PROJECT_NOT_IN_SESSION");
++    await this.confined(index.directory, item.path);
++    return { index, item };
++  }
++
++  private async confined(root: string, path: string) {
++    const resolved = await realpath(path);
++    const rel = relative(await realpath(root), resolved);
++    if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("CST_PATH_ESCAPES_SESSION");
++    return resolved;
++  }
++
++  /** Filesystem refresh does not start CST, a task, mesh generation or a provider. */
++  async artifact(input: CstSelection): Promise<CstArtifact | null> {
++    const { index, item } = await this.selected(input);
++    const path = item.snapshot_current ? item.snapshot : item.historical_snapshot;
++    if (!path) return null;
++    const safe = await this.confined(index.directory, path);
++    const snapshot: Record<string, unknown> = JSON.parse(await readFile(safe, "utf8"));
++    const folder = dirname(safe);
++    const meshes: CstArtifact["meshes"] = [];
++    // Asset names are restricted to the snapshot directory, never renderer paths.
++    const cad = snapshot.cad;
++    if (cad && typeof cad === "object" && "meshes" in cad && Array.isArray(cad.meshes)) {
++      for (const mesh of cad.meshes) {
++        if (typeof mesh.file !== "string" || typeof mesh.object !== "string") continue;
++        const data = await readFile(await this.confined(folder, join(folder, mesh.file)));
++        const vertices: number[] = [];
++        const count = data.length >= 84 ? data.readUInt32LE(80) : 0;
++        if (84 + count * 50 === data.length) {
++          for (let n = 0; n < count; n++) for (let k = 0; k < 9; k++) vertices.push(data.readFloatLE(84 + n * 50 + 12 + k * 4));
++        } else {
++          for (const match of data.toString("utf8").matchAll(/vertex\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)/g)) {
++            vertices.push(Number(match[1]), Number(match[2]), Number(match[3]));
++          }
++        }
++        meshes.push({ name: mesh.object, vertices });
++      }
++    }
++    const curves: Record<string, unknown>[] = [];
++    if (Array.isArray(snapshot.curves)) for (const curve of snapshot.curves) {
++      if (typeof curve.file === "string") curves.push(JSON.parse(await readFile(await this.confined(folder, join(folder, curve.file)), "utf8")));
++    }
++    return { snapshot, meshes, curves, historical: !item.snapshot_current };
++  }
++
++  /** Both human controls and Pi connect to this same session-owned dispatcher. */
++  async action(input: CstAction): Promise<unknown> {
++    await this.selected(input);
++    const allowed = new Set(["cst_open_project", "cst_reload_project", "cst_close_project", "cst_refresh_view", "cst_refresh_results", "cst_readback", "cst_save_project", "cst_set_parameter", "cst_connection_status"]);
++    if (!allowed.has(input.tool) || !input.arguments || typeof input.arguments !== "object") throw new Error("CST_ACTION_NOT_ALLOWED");
++    if (["cst_open_project", "cst_reload_project"].includes(input.tool) && input.arguments.path !== input.project) throw new Error("CST_SELECTION_MISMATCH");
++    if (input.tool === "cst_save_project" && input.arguments.path) throw new Error("CST_SAVE_AS_REQUIRES_VERSION_WORKFLOW");
++    const raw = await this.call(input.sessionId, "mcp_cst_studio.workbench_service", "ensure");
++    if (!raw) throw new Error("CST_NOT_CONFIGURED");
++    const backend: { url: string; token: string; session_id: string } = JSON.parse(raw);
++    if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(backend.url) || backend.session_id !== input.sessionId) throw new Error("CST_INVALID_BACKEND");
++    const response = await fetch(backend.url + "/action", { method: "POST",
++      headers: { "Content-Type": "application/json", Authorization: "Bearer " + backend.token },
++      body: JSON.stringify({ tool: input.tool, arguments: input.arguments, project: input.project }), signal: AbortSignal.timeout(120000) });
++    const result: unknown = await response.json();
++    if (!response.ok) throw new Error(JSON.stringify(result));
++    return result;
++  }
++}
+diff --git a/src/main/index.ts b/src/main/index.ts
+index e19563e..d285fdb 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -1,3 +1,4 @@
++import { registerCstIpc } from "./ipc/cstIpc";
+ import {
+ 	app,
+ 	BrowserWindow,
+@@ -2196,6 +2197,7 @@ async function sendAgentPromptWithIntegrations(
+ }
+ 
+ function registerIpc() {
++	registerCstIpc(sessionCatalog, projectStore);
+ 	// 用量统计：业务在 UsageStatsService，handler 薄层只校验/适配
+ 	registerUsageStatsIpc(ipcMain, usageStatsService);
+ 
+diff --git a/src/main/ipc/cstIpc.ts b/src/main/ipc/cstIpc.ts
+new file mode 100644
+index 0000000..8be5e37
+--- /dev/null
++++ b/src/main/ipc/cstIpc.ts
+@@ -0,0 +1,28 @@
++import { ipcMain, shell } from "electron";
++import { ipcChannels } from "../../shared/ipc";
++import { CstWorkspaceService } from "../cst/CstWorkspaceService";
++import type { SessionCatalog } from "../sessions/SessionCatalog";
++import type { ProjectStore } from "../projects/ProjectStore";
++import type { CstAction, CstSelection } from "../../shared/types/cst";
++
++/** Renderer sends stable identities, never arbitrary filesystem or process commands. */
++export function registerCstIpc(catalog: SessionCatalog, projects: ProjectStore) {
++  const service = new CstWorkspaceService((id) => {
++    const session = catalog.get(id);
++    const project = session && projects.get(session.projectId);
++    return session && project ? { projectPath: project.path, createdAt: session.createdAt } : undefined;
++  });
++  ipcMain.handle(ipcChannels.cstIndex, (_event, id: string) => service.index(id));
++  ipcMain.handle(ipcChannels.cstOpenFolder, async (_event, id: string) => {
++    const index = await service.index(id);
++    if (!index) throw new Error("CST_NOT_CONFIGURED");
++    const error = await shell.openPath(index.directory);
++    if (error) throw new Error(error);
++  });
++  ipcMain.handle(ipcChannels.cstReveal, async (_event, input: CstSelection) => {
++    const { item } = await service.selected(input);
++    shell.showItemInFolder(item.path);
++  });
++  ipcMain.handle(ipcChannels.cstArtifact, (_event, input: CstSelection) => service.artifact(input));
++  ipcMain.handle(ipcChannels.cstAction, (_event, input: CstAction) => service.action(input));
++}
+diff --git a/src/preload/index.ts b/src/preload/index.ts
+index 9fd9fbd..1cfa678 100644
+--- a/src/preload/index.ts
++++ b/src/preload/index.ts
+@@ -1,3 +1,4 @@
++import type { CstWorkspace, CstSelection, CstAction, CstArtifact } from "../shared/types/cst";
+ import { clipboard, contextBridge, ipcRenderer, webUtils } from "electron";
+ import { ipcChannels } from "../shared/ipc";
+ import type { RpcLogBatch, RpcLogEntry } from "../shared/types/rpcLog";
+@@ -210,6 +211,13 @@ function readClipboardFilePaths(): string[] {
+ }
+ 
+ const api = {
++	cst: {
++		index: (id: string): Promise<CstWorkspace | null> => ipcRenderer.invoke(ipcChannels.cstIndex, id),
++		openFolder: (id: string): Promise<void> => ipcRenderer.invoke(ipcChannels.cstOpenFolder, id),
++		reveal: (input: CstSelection): Promise<void> => ipcRenderer.invoke(ipcChannels.cstReveal, input),
++		artifact: (input: CstSelection): Promise<CstArtifact | null> => ipcRenderer.invoke(ipcChannels.cstArtifact, input),
++		action: (input: CstAction): Promise<unknown> => ipcRenderer.invoke(ipcChannels.cstAction, input),
++	},
+ 	clipboard: {
+ 		// 同步读取剪贴板（主进程 clipboard 模块），供输入框右键“粘贴”菜单使用：
+ 		// readText 读纯文本；readHtml 读富文本（无 HTML 时返回空串，调用方降级纯文本）
+diff --git a/src/renderer/src/App.tsx b/src/renderer/src/App.tsx
+index 92fd675..e057cc9 100644
+--- a/src/renderer/src/App.tsx
++++ b/src/renderer/src/App.tsx
+@@ -1,3 +1,4 @@
++import { CstSessionWorkspace } from "./features/cst/CstSessionWorkspace";
+ import {
+   lazy,
+   Suspense,
+@@ -3012,7 +3013,7 @@ export function App() {
+       chrome={sessionTabsBarNode}
+       layout={workbenchLayout}
+       hasContent={workbenchHasContent}
+-      session={chatPaneSessionNode}
++      session={<CstSessionWorkspace sessionId={currentSessionId}>{chatPaneSessionNode}</CstSessionWorkspace>}
+       content={workbenchContentNode}
+     />
+   );
+diff --git a/src/renderer/src/features/cst/CstSessionWorkspace.tsx b/src/renderer/src/features/cst/CstSessionWorkspace.tsx
+new file mode 100644
+index 0000000..5857e94
+--- /dev/null
++++ b/src/renderer/src/features/cst/CstSessionWorkspace.tsx
+@@ -0,0 +1,104 @@
++import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
++import type { CstArtifact, CstWorkspace } from "../../../../shared/types/cst";
++import { desktopApi as api } from "../../desktopApi";
++import { t } from "../../i18n";
++import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui-shadcn/resizable";
++import { CstCad, CstCurves, CstSchematic, list, record } from "./CstVisuals";
++
++/** The session key remounts this owner, so late responses cannot retarget another chat. */
++export function CstSessionWorkspace({ sessionId, children }: { sessionId?: string; children: ReactNode }) {
++  return sessionId ? <SessionWorkbench key={sessionId} sessionId={sessionId}>{children}</SessionWorkbench> : children;
++}
++
++function SessionWorkbench({ sessionId, children }: { sessionId: string; children: ReactNode }) {
++  const [index, setIndex] = useState<CstWorkspace | null>(null);
++  const [selected, setSelected] = useState("");
++  const [artifact, setArtifact] = useState<CstArtifact | null>(null);
++  const [tab, setTab] = useState("3d");
++  const [open, setOpen] = useState(true);
++  const [busy, setBusy] = useState(false);
++  const [message, setMessage] = useState("");
++  const generation = useRef(0);
++  const alive = useRef(true);
++  useEffect(() => { alive.current = true; return () => { alive.current = false; generation.current++; }; }, []);
++  const reload = useCallback(async () => {
++    const current = ++generation.current;
++    const value = await api.cst.index(sessionId);
++    if (!alive.current || current !== generation.current) return;
++    setIndex(value);
++    setSelected((old) => value?.projects.some((p) => p.path === old) ? old : value?.recommended_project ?? value?.projects[0]?.path ?? "");
++  }, [sessionId]);
++  useEffect(() => { void reload().catch((e) => setMessage(String(e))); }, [reload]);
++  useEffect(() => {
++    let cancelled = false;
++    setArtifact(null);
++    if (selected) void api.cst.artifact({ sessionId, project: selected }).then((data) => {
++      if (!cancelled) setArtifact(data);
++    }).catch((e) => { if (!cancelled) setMessage(String(e)); });
++    return () => { cancelled = true; };
++  }, [sessionId, selected, index]);
++  const item = index?.projects.find((p) => p.path === selected);
++  async function act(tool: string, args: Record<string, unknown> = {}) {
++    setBusy(true); setMessage("");
++    try {
++      const result = record(await api.cst.action({ sessionId, project: selected, tool, arguments: args }));
++      const content = list(result.content).map(record);
++      setMessage(content.map((c) => String(c.text ?? "")).join("\n"));
++      await reload();
++      if (alive.current && typeof result.active_project === "string") setSelected(result.active_project);
++    } catch (e) { if (alive.current) setMessage(String(e)); }
++    finally { if (alive.current) setBusy(false); }
++  }
++  const button = "rounded border px-2 py-1 text-xs disabled:opacity-40";
++  if (!index) return <>{children}</>;
++  const body = <section className="flex h-full min-h-0 flex-col overflow-hidden bg-background" data-testid="cst-workbench">
++    <div className="flex flex-wrap items-center gap-2 border-b p-2">
++      <strong className="text-sm">{t("cst.title")}</strong>
++      <button className={button} onClick={() => void api.cst.openFolder(sessionId).catch((e) => setMessage(String(e)))}>{t("cst.openFolder")}</button>
++      <button className={button} onClick={() => void reload()}>{t("cst.refreshFiles")}</button>
++      <button className={button} onClick={() => setOpen(false)}>{t("cst.hide")}</button>
++    </div>
++    <div className="space-y-2 border-b p-2 text-xs">
++      <p className="break-all text-muted-foreground">{index.directory}</p>
++      <select className="w-full rounded border bg-background p-1" value={selected} disabled={busy} onChange={(e) => setSelected(e.target.value)}>
++        {index.projects.map((p) => <option key={p.path} value={p.path}>{p.label}</option>)}
++      </select>
++      <p className="break-all" data-testid="cst-project-path">{selected}</p>
++      <p>{t("cst.paused")}</p>
++      <div className="flex flex-wrap gap-2">
++        <button className={button} disabled={!item} onClick={() => void api.cst.reveal({ sessionId, project: selected }).catch((e) => setMessage(String(e)))}>{t("cst.locate")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_open_project", { path: selected })}>{t("cst.connect")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_reload_project", {path:selected})}>{t("cst.readActual")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_refresh_results", {origin:"unknown"})}>{t("cst.readResults")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_refresh_results", {origin:"manual"})}>{t("cst.readManualResults")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_save_project")}>{t("cst.save")}</button>
++        <button className={button} disabled={busy || !item} onClick={() => void act("cst_close_project")}>{t("cst.release")}</button>
++      </div>
++      <p>{item?.result_origin} · {item?.result_binding} · {item?.result_note}</p>
++      {artifact?.historical && <p className="text-amber-500">{t("cst.historical")}</p>}
++      {artifact && <p>{t("cst.observedAt")} {new Date(Number(artifact.snapshot.read_at) * 1000).toLocaleString()}</p>}
++      {message && <details open><summary>{t("cst.receipt")}</summary><pre className="max-h-36 overflow-auto whitespace-pre-wrap">{message}</pre></details>}
++    </div>
++    <nav className="flex gap-2 border-b p-2">{[{name:"3d",label:t("cst.tab.3d")},{name:"mesh",label:t("cst.tab.mesh")},{name:"schematic",label:t("cst.tab.schematic")},{name:"settings",label:t("cst.tab.settings")},{name:"results",label:t("cst.tab.results")}].map(({name,label}) => <button key={name} className={`${button} ${tab === name ? "bg-accent" : ""}`} onClick={() => setTab(name)}>{label}</button>)}</nav>
++    <div className="min-h-0 flex-1 overflow-auto p-3">
++      {!artifact ? <p className="text-sm">{t("cst.noSnapshot")}</p> : <>
++        {tab === "3d" && <CstCad meshes={artifact.meshes} cable={artifact.snapshot.cable} />}
++        {tab === "schematic" && <CstSchematic snapshot={artifact.snapshot} />}
++        {tab === "mesh" && <><p>{t("cst.meshPending")}</p><pre>{JSON.stringify({ cells: artifact.snapshot.mesh_cells, source: "CST readback" }, null, 2)}</pre></>}
++        {tab === "results" && <CstCurves curves={artifact.curves} />}
++        {tab === "settings" && <>
++          <p className="text-xs">{t("cst.parameterHint")}</p>
++          {list(record(artifact.snapshot.parameters).parameters).map((p) => { const param = record(p); return <form key={String(param.name)} className="my-2 flex gap-2 text-xs"
++            onSubmit={(e) => { e.preventDefault(); const data = new FormData(e.currentTarget); void act("cst_set_parameter", { name: param.name, value: data.get("value") }); }}>
++            <label>{String(param.name)}<input name="value" className="ml-2 rounded border bg-background p-1" defaultValue={String(param.expression)} key={String(param.expression)} /></label>
++            <button className={button} disabled={busy || artifact.historical}>{t("cst.apply")}</button></form>; })}
++          <pre className="whitespace-pre-wrap text-xs">{JSON.stringify({ units: artifact.snapshot.units, frequency: artifact.snapshot.frequency, solver: artifact.snapshot.solver, tasks: artifact.snapshot.tasks, plane_wave: artifact.snapshot.plane_wave, probes: artifact.snapshot.field_probes }, null, 2)}</pre>
++        </>}
++      </>}
++    </div>
++  </section>;
++  return <div className="flex h-full min-h-0 flex-col">
++    {!open && <div className="flex gap-2 border-b p-2"><button className={button} onClick={() => setOpen(true)}>{t("cst.title")}</button><button className={button} onClick={() => void api.cst.openFolder(sessionId)}>{t("cst.openFolder")}</button></div>}
++    {open ? <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1"><ResizablePanel defaultSize="38%" minSize="20%">{children}</ResizablePanel><ResizableHandle withHandle /><ResizablePanel defaultSize="62%" minSize="30%">{body}</ResizablePanel></ResizablePanelGroup> : children}
++  </div>;
++}
+diff --git a/src/renderer/src/features/cst/CstVisuals.tsx b/src/renderer/src/features/cst/CstVisuals.tsx
+new file mode 100644
+index 0000000..2ba37a3
+--- /dev/null
++++ b/src/renderer/src/features/cst/CstVisuals.tsx
+@@ -0,0 +1,109 @@
++import { useEffect, useRef, useState } from "react";
++import type { CstArtifact } from "../../../../shared/types/cst";
++import { t } from "../../i18n";
++
++export function record(value: unknown): Record<string, unknown> {
++  return value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : {};
++}
++export function list(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
++
++/** Orthographic CAD preview from real STL triangles, never a solver-mesh surrogate. */
++export function CstCad({ meshes, cable }: Pick<CstArtifact, "meshes"> & { cable?: unknown }) {
++  const canvas = useRef<HTMLCanvasElement>(null);
++  const [angle, setAngle] = useState([.6, -.55]);
++  const [hidden, setHidden] = useState<string[]>([]);
++  const [opacity, setOpacity] = useState(.3);
++  const [zoom, setZoom] = useState(1);
++  useEffect(() => {
++    const element = canvas.current;
++    if (!element) return;
++    const ctx = element.getContext("2d");
++    if (!ctx) return;
++    ctx.clearRect(0, 0, 900, 580);
++    const all = meshes.flatMap((m) => m.vertices);
++    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
++    all.forEach((v, i) => { min[i % 3] = Math.min(min[i % 3], v); max[i % 3] = Math.max(max[i % 3], v); });
++    const center = min.map((v, i) => (v + max[i]) / 2);
++    const scale = 350 * zoom / Math.max(...max.map((v, i) => v - min[i]), 1);
++    function project(x: number, y: number, z: number) {
++      x -= center[0]; y -= center[1]; z -= center[2];
++      const xx = x * Math.cos(angle[0]) - y * Math.sin(angle[0]);
++      const yy = x * Math.sin(angle[0]) + y * Math.cos(angle[0]);
++      return [450 + xx * scale, 290 - (z * Math.cos(angle[1]) - yy * Math.sin(angle[1])) * scale];
++    }
++    meshes.forEach((mesh, index) => {
++      if (hidden.includes(mesh.name)) return;
++      ctx.fillStyle = `hsla(${195 + index * 35},65%,60%,${opacity})`;
++      ctx.strokeStyle = `hsla(${195 + index * 35},75%,55%,.5)`;
++      for (let n = 0; n + 8 < mesh.vertices.length; n += 9) {
++        ctx.beginPath();
++        for (let k = 0; k < 3; k++) {
++          const p = project(mesh.vertices[n + k * 3], mesh.vertices[n + k * 3 + 1], mesh.vertices[n + k * 3 + 2]);
++          if (k === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
++        }
++        ctx.closePath(); ctx.fill(); ctx.stroke();
++      }
++    });
++    const harness = record(cable);
++    const knots = new Map(list(harness.knots).map((value) => { const knot = record(value); return [String(knot.id), list(knot.position).map(Number)]; }));
++    ctx.strokeStyle = "#f97316"; ctx.lineWidth = 3;
++    for (const route of list(harness.routes).map(record)) {
++      ctx.beginPath();
++      list(route.knots).forEach((id, n) => { const position = knots.get(String(id)); if (!position || position.length !== 3) return;
++        const p = project(position[0], position[1], position[2]); if (n === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]); });
++      ctx.stroke();
++    }
++    ctx.lineWidth = 1;
++  }, [meshes, cable, angle, hidden, opacity, zoom]);
++  return <div>
++    <p className="text-xs text-muted-foreground">{t("cst.cadHint")}</p>
++    <canvas ref={canvas} width={900} height={580} className="w-full cursor-grab rounded border"
++      onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
++      onPointerMove={(e) => { if (e.buttons === 1) setAngle((old) => [old[0] + e.movementX * .01, old[1] + e.movementY * .01]); }}
++      onWheel={(e) => setZoom((old) => Math.max(.2, Math.min(6, old * (e.deltaY > 0 ? .9 : 1.1))))} />
++    <label className="text-xs">{t("cst.opacity")} <input type="range" min={.05} max={1} step={.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} /></label>
++    {meshes.map((m) => <label key={m.name} className="block text-xs"><input type="checkbox" checked={!hidden.includes(m.name)}
++      onChange={() => setHidden((old) => old.includes(m.name) ? old.filter((x) => x !== m.name) : [...old, m.name])} /> {m.name}</label>)}
++  </div>;
++}
++
++/** Connection topology and pin labels come from actual CST readback, not a template. */
++export function CstSchematic({ snapshot }: Pick<CstArtifact, "snapshot">) {
++  const schematic = record(snapshot.schematic);
++  const blocks = list(schematic.blocks).map(record);
++  const probes = list(snapshot.circuit_probes).map(record);
++  const nets = list(schematic.nets).map(record);
++  const names = [...blocks, ...probes].map((b) => String(b.name));
++  const positions = new Map(names.map((name, i) => [name, [110 + i % 3 * 240, 90 + Math.floor(i / 3) * 130]]));
++  return <div><p className="text-xs text-muted-foreground">{t("cst.schematicHint")}</p>
++    <svg viewBox="0 0 740 450" className="w-full rounded border">
++      {nets.map((net) => { const ports = list(net.ports).map(list); const a = positions.get(String(ports[0]?.[1])); const b = positions.get(String(ports[1]?.[1]));
++        return a && b ? <g key={String(net.name)}><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke="#38bdf8" />
++          <text x={(a[0] + b[0]) / 2} y={(a[1] + b[1]) / 2 - 7} fill="currentColor" fontSize="10">{String(net.name)}</text></g> : null; })}
++      {names.map((name) => { const p = positions.get(name)!; return <g key={name}>
++        <rect x={p[0] - 45} y={p[1] - 20} width="90" height="40" rx="7" fill="#172f44" stroke="#64748b" />
++        <text x={p[0]} y={p[1] + 4} textAnchor="middle" fill="white" fontSize="12">{name}</text></g>; })}
++    </svg>
++    <table className="w-full text-xs"><tbody>{nets.map((n) => <tr key={String(n.name)}><td>{String(n.name)}</td><td>{list(n.ports).map((p) => list(p).join(" : ")).join(" ↔ ")}</td></tr>)}</tbody></table>
++    <pre className="mt-3 whitespace-pre-wrap text-xs">{JSON.stringify(snapshot.block_properties, null, 2)}</pre>
++  </div>;
++}
++
++export function CstCurves({ curves }: Pick<CstArtifact, "curves">) {
++  if (!curves.length) return <p>{t("cst.noResults")}</p>;
++  return <div>{curves.map((curve, i) => {
++    const data = record(curve.data);
++    const x = list(data.x).map(Number), real = list(data.real ?? data.y).map(Number), imag = list(data.imag).map(Number);
++    const parameter = String(curve.tree_path).includes("S-Parameters");
++    const y = real.map((v, n) => parameter ? 20 * Math.log10(Math.max(1e-15, Math.hypot(v, imag[n] ?? 0))) : v);
++    if (!x.length || x.length !== y.length) return <pre key={i}>{JSON.stringify(curve, null, 2)}</pre>;
++    const lo = Math.min(...y), hi = Math.max(...y), xmin = Math.min(...x), xmax = Math.max(...x);
++    const points = x.map((v, n) => `${50 + 630 * (v - xmin) / (xmax - xmin || 1)},${250 - 210 * (y[n] - lo) / (hi - lo || 1)}`).join(" ");
++    return <div key={i} className="mb-4"><p className="text-xs">{String(curve.tree_path)} · CST run_id={String(curve.run_id)} {parameter ? "|S11| dB" : String(curve.quantity ?? curve.ylabel ?? "")}</p>
++      <svg viewBox="0 0 720 290" className="w-full border"><line x1="50" y1="40" x2="50" y2="250" stroke="currentColor" /><line x1="50" y1="250" x2="680" y2="250" stroke="currentColor" />
++        <polyline points={points} fill="none" stroke="#38bdf8" strokeWidth="2" />
++        <text x="5" y="45" fill="currentColor" fontSize="12">{hi.toPrecision(4)}</text><text x="5" y="250" fill="currentColor" fontSize="12">{lo.toPrecision(4)}</text>
++        <text x="50" y="270" fill="currentColor" fontSize="12">{xmin.toPrecision(4)}</text><text x="610" y="270" fill="currentColor" fontSize="12">{xmax.toPrecision(4)}</text>
++        <text x="300" y="287" fill="currentColor" fontSize="12">{String(curve.xlabel ?? "")}</text></svg></div>;
++  })}</div>;
++}
+diff --git a/src/renderer/src/i18n/rendererCopy.en-US.ts b/src/renderer/src/i18n/rendererCopy.en-US.ts
+index 62e9450..a594d1b 100644
+--- a/src/renderer/src/i18n/rendererCopy.en-US.ts
++++ b/src/renderer/src/i18n/rendererCopy.en-US.ts
+@@ -2,6 +2,35 @@ import { mainProcessEnUS } from "../../../shared/i18n/mainProcessCopy";
+ import type { TranslationKey } from "./rendererCopy.zh-CN";
+ 
+ export const enUS: Record<TranslationKey, string> = {
++  "cst.observedAt": "Readback observed at:",
++  "cst.readResults": "Read existing results (no solve)",
++  "cst.readManualResults": "Read my manual-run results",
++  "cst.title": "CST Workbench",
++  "cst.openFolder": "Open session folder",
++  "cst.refreshFiles": "Refresh project/result index",
++  "cst.hide": "Hide workbench",
++  "cst.paused": "Automatic solving paused. Inspect/run the complete copy in native CST.",
++  "cst.locate": "Locate .cst file",
++  "cst.connect": "Open selected project (no solve)",
++  "cst.readActual": "Read actual project (no save/solve)",
++  "cst.save": "Save current project",
++  "cst.release": "Release project",
++  "cst.historical": "Historical readback evidence, not verified as the current revision. Editing disabled.",
++  "cst.receipt": "Operation receipt",
++  "cst.noSnapshot": "No actual readback bound to this revision. Locate the native file, or connect and read without solving.",
++  "cst.meshPending": "Actual solver-mesh display is unverified. Counts below are readback statistics; STL triangles are not solver cells.",
++  "cst.parameterHint": "Read actual state before edits. External native saves block writes; release and reconnect first.",
++  "cst.apply": "Apply and read back",
++  "cst.cadHint": "Actual CST-exported CAD surfaces. Drag to rotate, scroll to zoom. Not solver mesh.",
++  "cst.opacity": "Opacity",
++  "cst.schematicHint": "Topology from actual Nets. See exact pin connections below; layout differs from native CST.",
++  "cst.noResults": "No displayable results bound to this revision; no new complete 222 V/I.",
++  "cst.tab.3d": "3D model",
++  "cst.tab.mesh": "Solver mesh",
++  "cst.tab.schematic": "Schematic",
++  "cst.tab.settings": "Parameters/tasks",
++  "cst.tab.results": "Results",
++
+   "app.chatProject": "Chat",
+   "pagination.label": "Pagination",
+   "pagination.page": "Page {page}",
+diff --git a/src/renderer/src/i18n/rendererCopy.zh-CN.ts b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+index 472b23b..d080432 100644
+--- a/src/renderer/src/i18n/rendererCopy.zh-CN.ts
++++ b/src/renderer/src/i18n/rendererCopy.zh-CN.ts
+@@ -1,6 +1,35 @@
+ import { mainProcessZhCN } from "../../../shared/i18n/mainProcessCopy";
+ 
+ export const zhCN = {
++  "cst.observedAt": "实际读回时间：",
++  "cst.readResults": "读取已有结果（不求解）",
++  "cst.readManualResults": "读取我手动运行的结果",
++  "cst.title": "CST 工作台",
++  "cst.openFolder": "打开会话文件夹",
++  "cst.refreshFiles": "刷新工程/结果索引",
++  "cst.hide": "收起工作台",
++  "cst.paused": "本轮暂停自动求解；请在完整工程副本中人工检查/运行。",
++  "cst.locate": "定位 .cst 文件",
++  "cst.connect": "连接所选工程（不求解）",
++  "cst.readActual": "重新读取工程（不保存/求解）",
++  "cst.save": "保存当前工程",
++  "cst.release": "释放工程连接",
++  "cst.historical": "当前显示历史读回证据，未认定为当前版本；编辑已禁用。",
++  "cst.receipt": "实际操作返回",
++  "cst.noSnapshot": "尚无与此版本匹配的实际读回。可定位原生工程检查；连接并重新读取不会求解。",
++  "cst.meshPending": "真实求解网格显示尚未验证；以下仅为CST读回统计，不以STL三角面冒充网格。",
++  "cst.parameterHint": "修改前先实际读回；原生CST外部保存后写操作会被阻止，请释放后重连。",
++  "cst.apply": "修改并读回",
++  "cst.cadHint": "实际CST导出的CAD表面；拖动旋转、滚轮缩放。非求解网格。",
++  "cst.opacity": "透明度",
++  "cst.schematicHint": "按实际Net生成的拓扑简图；引脚连接以下表为准，布局不等同原生原理图。",
++  "cst.noResults": "此版本没有已绑定的可显示结果；没有新完整222 V/I。",
++  "cst.tab.3d": "3D模型",
++  "cst.tab.mesh": "真实网格",
++  "cst.tab.schematic": "原理图",
++  "cst.tab.settings": "参数与任务",
++  "cst.tab.results": "结果",
++
+   "app.chatProject": "聊天",
+   "pagination.label": "分页",
+   "pagination.page": "第 {page} 页",
+diff --git a/src/renderer/src/previewApi.ts b/src/renderer/src/previewApi.ts
+index 0a87ae5..0c473c5 100644
+--- a/src/renderer/src/previewApi.ts
++++ b/src/renderer/src/previewApi.ts
+@@ -187,6 +187,7 @@ export function createPreviewApi(): PiDesktopApi {
+ 		return tab;
+ 	};
+ 	return {
++    cst: { index: async () => null, openFolder: async () => { throw new Error("CST_DESKTOP_ONLY"); }, reveal: async () => { throw new Error("CST_DESKTOP_ONLY"); }, artifact: async () => null, action: async () => { throw new Error("CST_DESKTOP_ONLY"); } },
+ 		clipboard: clipboardStub,
+ 		// 进程监控预览桩：返回空快照，仅供预览模式不崩溃
+ 		system: {
+diff --git a/src/shared/ipc.ts b/src/shared/ipc.ts
+index cbd3743..9ff499b 100644
+--- a/src/shared/ipc.ts
++++ b/src/shared/ipc.ts
+@@ -1,4 +1,9 @@
+ export const ipcChannels = {
++	cstIndex: "cst:index",
++	cstOpenFolder: "cst:open-folder",
++	cstReveal: "cst:reveal",
++	cstArtifact: "cst:artifact",
++	cstAction: "cst:action",
+ 	projectsList: "projects:list",
+ 	projectsAdd: "projects:add",
+ 	projectsRemove: "projects:remove",
+diff --git a/src/shared/types/cst.ts b/src/shared/types/cst.ts
+new file mode 100644
+index 0000000..1c5c708
+--- /dev/null
++++ b/src/shared/types/cst.ts
+@@ -0,0 +1,17 @@
++/** Native project identity travels with every workbench request. */
++export type CstProject = {
++  path: string; label: string; sha256: string; native_directory: string;
++  snapshot?: string; snapshot_current: boolean; status?: string;
++  result_origin: string; result_binding: string; result_note?: string;
++  historical_snapshot?: string;
++};
++export type CstWorkspace = {
++  session_id: string; directory: string; entry: string; title: string;
++  recommended_project: string | null; projects: CstProject[];
++};
++export type CstSelection = { sessionId: string; project: string };
++export type CstAction = CstSelection & {
++  tool: string; arguments: Record<string, unknown>;
++};
++export type CstArtifact = { snapshot: Record<string, unknown>; meshes: { name: string; vertices: number[] }[];
++  curves: Record<string, unknown>[]; historical: boolean };
+diff --git a/tests/cstWorkspace.test.mjs b/tests/cstWorkspace.test.mjs
+new file mode 100644
+index 0000000..ca6eb13
+--- /dev/null
++++ b/tests/cstWorkspace.test.mjs
+@@ -0,0 +1,59 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
++import { readFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { createRequire } from "node:module";
++import vm from "node:vm";
++import ts from "typescript";
++
++const require = createRequire(import.meta.url);
++function load(fakeExec) {
++  fakeExec[require("node:util").promisify.custom] = (...args) => new Promise((resolve, reject) => fakeExec(...args, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr })));
++  const source = readFileSync("src/main/cst/CstWorkspaceService.ts", "utf8");
++  const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
++  const module = { exports: {} };
++  vm.runInNewContext(output, { module, exports: module.exports, process, AbortSignal, Set,
++    require: (name) => name === "node:child_process" ? { execFile: fakeExec } : require(name),
++    fetch: () => { throw new Error("unexpected backend call"); } });
++  return module.exports.CstWorkspaceService;
++}
++
++test("CST index uses the stable session identity and rejects another session's project", async () => {
++  const root = await mkdtemp(join(tmpdir(), "cst-workspace-"));
++  try {
++    await writeFile(join(root, ".cst-workspace.json"), JSON.stringify({ python: join(root, "python.exe"), source: root }));
++    const first = join(root, "sessions", "a"), second = join(root, "sessions", "b");
++    await mkdir(first, { recursive: true }); await mkdir(second, { recursive: true });
++    await writeFile(join(first, "model.cst"), "native a"); await writeFile(join(second, "model.cst"), "native b");
++    const calls = [];
++    const Service = load((_exe, args, options, callback) => {
++      const id = args[args.indexOf("--session") + 1]; calls.push({ id, args, options });
++      callback(null, JSON.stringify({ session_id: id, directory: id === "a" ? first : second,
++        projects: [{ path: join(id === "a" ? first : second, "model.cst") }] }), "");
++    });
++    const service = new Service((id) => ["a", "b"].includes(id) ? { projectPath: root, createdAt: 1000 } : undefined);
++    assert.equal((await service.index("a")).directory, first);
++    assert.equal((await service.index("b")).directory, second);
++    await assert.rejects(service.selected({ sessionId: "a", project: join(second, "model.cst") }), /NOT_IN_SESSION/);
++    await assert.rejects(service.index("missing"), /NOT_FOUND/);
++    assert.ok(calls.every((call) => call.args[2] === "inventory" && call.options.windowsHide));
++    assert.ok(calls.every((call) => !call.args.includes("serve")));
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
++
++test("CST refresh refuses an artifact escaping its session and never calls a backend", async () => {
++  const root = await mkdtemp(join(tmpdir(), "cst-artifact-"));
++  try {
++    await writeFile(join(root, ".cst-workspace.json"), JSON.stringify({ python: join(root, "python.exe"), source: root }));
++    const session = join(root, "session"); await mkdir(session);
++    const project = join(session, "x.cst"); await writeFile(project, "native");
++    const external = join(root, "external.json"); await writeFile(external, "{}");
++    const Service = load((_exe, args, options, callback) => callback(null, JSON.stringify({ session_id: "a", directory: session,
++      projects: [{ path: project, snapshot_current: true, snapshot: external }] }), ""));
++    const service = new Service(() => ({ projectPath: root, createdAt: 1000 }));
++    await assert.rejects(service.artifact({ sessionId: "a", project }), /ESCAPES_SESSION/);
++    await assert.rejects(service.action({ sessionId: "a", project, tool: "cst_run_task", arguments: {} }), /ACTION_NOT_ALLOWED/);
++  } finally { await rm(root, { recursive: true, force: true }); }
++});
+-- 
+2.54.0.windows.1
+

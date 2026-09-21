@@ -10,6 +10,7 @@ import uuid
 import xml.etree.ElementTree as ET
 import re
 import struct
+import os
 
 from mcp.types import TextContent, Tool
 
@@ -19,6 +20,12 @@ from mcp_cst_studio.config import CSTConfig
 
 
 TOOLS = [
+    Tool(name="cst_reload_project", description="Explicitly reload a selected saved session project and read it without saving/meshing/solving. Refuses active or unknown solver state and unsaved backend edits.",
+         inputSchema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"], "additionalProperties": False}),
+    Tool(name="cst_refresh_results", description="Read existing S-parameter/voltage/current curves only. Never run a task. Native run IDs and observed project hash are recorded; association with the current model remains unverified. manual means a caller declaration, not inferred authorship.",
+         inputSchema={"type": "object", "properties": {"origin": {"type": "string", "enum": ["unknown", "manual", "historical_import"], "default": "unknown"}}, "additionalProperties": False}),
+    Tool(name="cst_refresh_view", description="Read the explicitly opened project and export a CAD snapshot without saving, rebuilding, meshing or solving. Stale result curves are excluded.",
+         inputSchema={"type": "object", "properties": {}, "additionalProperties": False}),
     Tool(name="cst_prepare_reference", description=(
         "Copy a saved reference into a new attempt under CST_WORK_DIR and open only the copy. "
         "Does not run a solver. Embedded dependencies are extracted by CST; external dependencies "
@@ -81,13 +88,16 @@ def prepare_reference(client: CSTClient, source: str, attempt: str) -> dict:
     if source_path.suffix.lower() != ".cst":
         raise ValueError("Reference must be a .cst file")
     root = Path(client._config.work_dir).resolve()
+    if client._config.session_dir:
+        root = root / "工程"
     destination = root / attempt
-    destination.mkdir(parents=True, exist_ok=False)
-    target = destination / "model.cst"
+    from mcp_cst_studio.session_workspace import copy_bundle
+    copy_bundle(source_path, destination)
+    target = destination / source_path.name
     receipt = {"attempt": attempt, "kind": "reference_operation", "source": str(source_path),
                "source_sha256": sha256(source_path), "created_at": time.time(),
                "project": str(target), "model_usage": None, "human_acceptance": "pending"}
-    shutil.copy2(source_path, target)
+    receipt["bundle_receipt"] = str(destination / "bundle-copy.json")
     receipt["copy_sha256_before_open"] = sha256(target)
     receipt["open"] = client.open_project(str(target))
     receipt["source_unchanged"] = sha256(source_path) == receipt["source_sha256"]
@@ -223,17 +233,20 @@ def read_harness(path: Path) -> dict:
             "cables": [dict(c.attrib) for c in root.findall("./Cabling/CableInstance")]}
 
 
-def publish_view(client: CSTClient, label: str, reproduction_kind: str) -> dict:
+def publish_view(client: CSTClient, label: str, reproduction_kind: str, *, save: bool = True) -> dict:
     if not client.connected or not client.project_path:
         raise ValueError("Open an independent project first")
-    saved = client.save_project()
-    if saved.get("status") != "saved":
-        return saved
+    if save:
+        saved = client.save_project()
+        if saved.get("status") != "saved":
+            return saved
     snapshot = readback(client)
     root = Path(client._config.work_dir).resolve() / "views"
     folder = root / uuid.uuid4().hex
     folder.mkdir(parents=True)
     snapshot.update(case_label=label, reproduction_kind=reproduction_kind, curves=[])
+    snapshot["project_sha256"] = sha256(Path(client.project_path))
+    snapshot["session_id"] = os.environ.get("CST_SESSION_ID")
     try:
         model = client._project.model3d
         # CST 2025.2 exposes this private no-history entry point. It is used only
@@ -270,6 +283,8 @@ def publish_view(client: CSTClient, label: str, reproduction_kind: str) -> dict:
         metadata = json.loads(path.read_text(encoding="utf-8"))
         if Path(metadata["project"]).resolve() != Path(client.project_path).resolve():
             continue
+        if client._config.session_dir and metadata.get("project_sha256") != snapshot["project_sha256"]:
+            continue  # Unknown/stale curves remain archived, never silently promoted.
         digest = sha256(path)
         if digest in seen_curves:
             continue
@@ -279,6 +294,19 @@ def publish_view(client: CSTClient, label: str, reproduction_kind: str) -> dict:
     snapshot["curves"].sort(key=lambda item: ("S-Parameters" not in item["label"], item["label"]))
     target = folder / "snapshot.json"
     target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    if client._config.session_dir:
+        from mcp_cst_studio.session_workspace import read_json, write_json, render_entry, results_fingerprint
+        session = Path(client._config.session_dir)
+        info = read_json(session / "会话信息.json")
+        item = next((p for p in info["projects"] if Path(p["path"]).resolve() == Path(client.project_path).resolve()), None)
+        if item is None:
+            item = {"path": client.project_path, "label": label, "result_origin": "unknown", "result_binding": "unknown"}
+            info["projects"].append(item)
+        item.update(snapshot=str(target), snapshot_project_sha256=snapshot["project_sha256"],
+                    snapshot_results_fingerprint=results_fingerprint(Path(client.project_path)),
+                    status="实际读回；人工验收待确认")
+        write_json(session / "会话信息.json", info)
+        render_entry(session)
     return {"status": "published", "snapshot": str(target), "readback_status": snapshot["status"],
             "sha256": sha256(target), "curves": len(snapshot["curves"]), "errors": snapshot["errors"]}
 
@@ -356,11 +384,30 @@ async def handle(name: str, arguments: dict, client: CSTClient) -> list[TextCont
     try:
         if name == "cst_prepare_reference":
             result = prepare_reference(client, **arguments)
+        elif name == "cst_reload_project":
+            target = client.checked_project_path(arguments["path"])
+            if getattr(client, "_unsaved_backend_edits", False):
+                raise ValueError("Save or explicitly resolve unsaved backend edits before reload")
+            if client.has_project:
+                state = client.solver_status()
+                if state.get("running") is not False:
+                    raise ValueError("Cannot reload while solver state is running or unknown")
+                closed = client.close_project()
+                if closed.get("status") != "closed":
+                    raise RuntimeError("Current project could not be released")
+            opened = client.open_project(target)
+            result = publish_view(client, "保存工程重新读取", "reference_operation", save=False) if opened.get("status") == "opened" else opened
         elif name == "cst_readback":
             result = readback(client)
+        elif name == "cst_refresh_view":
+            result = publish_view(client, "实际工程读回", "reference_operation", save=False)
+        elif name == "cst_refresh_results":
+            result = refresh_results(client, arguments.get("origin", "unknown"))
         elif name == "cst_read_curve":
             result = client.get_result(**arguments)
             if result.get("status") == "ok":
+                result["project_sha256"] = sha256(Path(client.project_path))
+                result["result_origin"] = "unknown"
                 path = Path(client.checked_project_path(client.project_path)).parent / "curves"
                 path.mkdir(exist_ok=True)
                 artifact = path / f"{uuid.uuid4().hex}.json"
@@ -385,3 +432,48 @@ async def handle(name: str, arguments: dict, client: CSTClient) -> list[TextCont
 def register_case_tools(server, client):
     from mcp_cst_studio.tools import _registry
     _registry.add_module(TOOLS, handle, client)
+
+
+def refresh_results(client: CSTClient, origin: str = "unknown") -> dict:
+    """Observation is not proof that old native results match the saved model."""
+    if origin not in ("unknown", "manual", "historical_import"):
+        raise ValueError("Unknown result origin")
+    if not client.connected or not client.project_path:
+        raise ValueError("Explicitly open the selected project before reading results")
+    from mcp_cst_studio.session_workspace import write_json, read_json, render_entry
+    project = Path(client.project_path)
+    record = {"observed_at": time.time(), "project": str(project), "project_sha256": sha256(project),
+              "result_origin": origin, "origin_assertion": "caller_declaration" if origin == "manual" else "not_inferred",
+              "model_result_association": "unverified", "curves": [], "errors": []}
+    directory = project.parent / "curves"
+    for domain in ("3d", "schematic"):
+        tree = client.list_results(domain)
+        if tree.get("status") != "ok":
+            record["errors"].append({"domain": domain, "error": tree})
+            continue
+        for path in tree.get("items", []):
+            if not re.search(r"S-Parameters|Voltage|Current", path, re.I):
+                continue
+            curve = client.get_result(path, domain)
+            if curve.get("status") != "ok":
+                continue  # tree also includes folders; only actual data items qualify
+            curve.update(project_sha256=record["project_sha256"], result_origin=origin,
+                         model_result_association="unverified", observed_at=record["observed_at"])
+            directory.mkdir(exist_ok=True)
+            target = directory / f"{uuid.uuid4().hex}.json"
+            write_json(target, curve)
+            record["curves"].append({"path": str(target), "tree_path": path, "native_run_id": curve.get("run_id"), "sha256": sha256(target)})
+    evidence = Path(client._config.session_dir or client._config.work_dir) / "过程记录" / f"results-{time.time_ns()}.json"
+    write_json(evidence, record)
+    if client._config.session_dir:
+        root = Path(client._config.session_dir)
+        info = read_json(root / "会话信息.json")
+        for item in info["projects"]:
+            if Path(item["path"]).resolve() == project.resolve():
+                item.update(result_origin=origin, result_binding="observed_unverified",
+                            result_note="当前原生文件中读取；与当前模型版本的数值对应尚未验证", result_receipt=str(evidence))
+        write_json(root / "会话信息.json", info)
+        render_entry(root)
+    view = publish_view(client, "已有结果只读刷新", "reference_operation", save=False)
+    return {"status": "ok", "receipt": str(evidence), "curves_read": len(record["curves"]),
+            "errors": record["errors"], "model_result_association": "unverified", "view": view}

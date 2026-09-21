@@ -20,3 +20,9 @@ htmlcov/
 *.log
 .DS_Store
 Thumbs.db
+# Native projects, session evidence and loopback credentials remain local.
+*.cst
+.cst-workspace.json
+.cst-sessions/
+.backend.json
+sessions/

@@ -972,7 +972,17 @@ async def handle(name: str, arguments: dict, client: CSTClient) -> list[TextCont
     try:
         if client.connected and name == "cst_set_parameter":
             parameter = validate_name(arguments["name"], "parameter name")
-            return _text(client.set_parameter(parameter, arguments["value"], arguments.get("description")))
+            result = client.set_parameter(parameter, arguments["value"], arguments.get("description"))
+            if client._config.session_dir and result.get("status") == "executed":
+                from mcp_cst_studio.tools.cases import publish_view
+                result["save"] = client.save_project()
+                result["project"] = client.project_path
+                if result["save"].get("status") != "saved":
+                    result["status"] = "error"
+                else:
+                    result["view"] = publish_view(client, "参数修改后实际读回", "modified_variant", save=False)
+                    client._edit_branch = None
+            return _text(result)
         if client.connected and name in ("cst_get_parameter", "cst_list_parameters"):
             parameter = arguments.get("name") if name == "cst_get_parameter" else None
             if parameter is not None:

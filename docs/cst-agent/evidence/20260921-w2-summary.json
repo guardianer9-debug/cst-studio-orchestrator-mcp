@@ -1,0 +1,50 @@
+{
+  "round": "W2",
+  "date": "2026-09-21",
+  "baseline": "15c708b81d8d268a38141c510413aece9e8eceb8",
+  "scope": "session-local complete native projects and manual inspection; no new solving",
+  "offline_tests": {
+    "passed": 592
+  },
+  "desktop_tests": {
+    "passed": 2138,
+    "skipped": 2,
+    "failed": 0,
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "historical_sessions_indexed": 5,
+  "model_versions_collected_including_new_inspection_copy": 14,
+  "historical_runs_collected": 3,
+  "new_automatic_solver_runs": 0,
+  "new_complete_222_VI": "not_obtained",
+  "live_CST": {
+    "complete_reference_copy": "passed",
+    "readback_and_CAD_export_without_saving": "passed",
+    "save_close_reopen": "passed",
+    "source_unchanged": "passed",
+    "desktop_parameter_L80_to_L82_new_version": "passed",
+    "existing_result_refresh": "5 curves read and rendered; association unverified"
+  },
+  "actual_Pi": {
+    "attempts": 3,
+    "accepted_by_runtime": true,
+    "readback_acceptance": "not_passed",
+    "failures": [
+      "gateway_queue_full",
+      "Connection error (after empty combined tool search)",
+      "internal_server_error"
+    ]
+  },
+  "human_acceptance": "pending",
+  "independent_numerical_validation": "pending",
+  "actual_billed_cost": null,
+  "private_evidence": "retained locally, linked from fixed Chinese reading entry; not uploaded",
+  "desktop_commit": "6bf318c7f45b3abaf2f79722c4f755cb07e7025b",
+  "limitations": [
+    "actual solver mesh geometry unverified",
+    "native external-edit handoff not fully verified",
+    "full schematic/task editing and run controls incomplete",
+    "historical pre-run model hash missing, not fabricated"
+  ]
+}

@@ -19,6 +19,8 @@ class CSTConfig:
     max_run_seconds: int = 3600
     max_run_rss_gb: float = 24
     min_system_free_gb: float = 16
+    session_dir: str = ""
+    simulation_paused: bool = False
 
     @classmethod
     def from_env(cls) -> CSTConfig:
@@ -43,6 +45,8 @@ class CSTConfig:
             max_run_seconds=int(os.environ.get("CST_MAX_RUN_SECONDS", "3600")),
             max_run_rss_gb=float(os.environ.get("CST_MAX_RUN_RSS_GB", "24")),
             min_system_free_gb=float(os.environ.get("CST_MIN_SYSTEM_FREE_GB", "16")),
+            session_dir=os.environ.get("CST_SESSION_DIR", ""),
+            simulation_paused=os.environ.get("CST_SIMULATION_PAUSED", "0") == "1",
         )
 
 

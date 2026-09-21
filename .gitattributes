@@ -1,0 +1,2 @@
+# Mail-patch context prefixes and signature whitespace are intentional payload.
+integrations/pideck/*.patch text eol=lf -whitespace

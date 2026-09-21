@@ -61,6 +61,10 @@ class ToolRegistry:
             self._tools.append(tool)
             # Bind *client* at registration time so each call gets the right ref
             async def guarded(name, args, _h=handle_fn, _c=client):
+                from mcp_cst_studio.operation_policy import check_paused, check_external_change
+                check_paused(_c, name, args)
+                if name not in ("cst_close_project", "cst_reload_project", "cst_connection_status", "cst_get_simulation_status", "cst_stop_simulation"):
+                    check_external_change(_c)
                 if getattr(_c, "_task_job", None) and name not in (
                     "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status", "cst_read_project_log"
                 ):
@@ -70,6 +74,8 @@ class ToolRegistry:
                         return [TextContent(type="text", text=json.dumps({"status": "error",
                             "message": "Schematic task owns the project; only status/stop is available",
                             "job_id": state["job_id"]}))]
+                from mcp_cst_studio.operation_policy import prepare_edit
+                prepare_edit(_c, name, args)
                 return await _h(name, args, _c)
             self._handlers[tool.name] = guarded
 
@@ -115,6 +121,9 @@ class ToolRegistry:
                 except (ValueError, AttributeError):
                     pass
             return CallToolResult(content=result, isError=failed)
+
+        # The desktop bridge uses the exact same dispatcher, evidence and lock.
+        self.invoke = _call_tool
 
 
 # Module-level registry shared across register_* calls

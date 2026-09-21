@@ -25,6 +25,8 @@ def write(path: Path, value: dict):
 
 def start_task(client, task: str, max_seconds: int | None = None, max_rss_gb: float | None = None, domain: str = "schematic") -> dict:
     import psutil
+    if getattr(client._config, "simulation_paused", False):
+        raise ValueError("Automatic simulation is paused; task was not created")
     if not client._owns_environment or not client.has_project:
         raise ValueError("Task execution requires an owned CST instance and an open working copy")
     if getattr(client, "_task_job", None) and task_status(client)["state"] not in TERMINAL:

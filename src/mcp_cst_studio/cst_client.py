@@ -176,6 +176,11 @@ class CSTClient:
 
     def open_project(self, path: str) -> dict:
         """Open an existing CST project."""
+        if self._config.session_dir or (CST_AVAILABLE and self._config.connection_mode != "offline"):
+            try:
+                path = self.checked_project_path(path)
+            except ValueError as exc:
+                return {"status": "error", "message": str(exc)}
         if self._de is None and CST_AVAILABLE and self._config.connection_mode != "offline":
             connection = self.connect()
             if connection.get("status") == "error":
@@ -189,6 +194,9 @@ class CSTClient:
                         raise ValueError("Close the current project before opening another")
                 self._project = self._de.open_project(path)
                 self._project_path = path
+                from mcp_cst_studio.operation_policy import remember_file
+                remember_file(self)
+                self._unsaved_backend_edits = False
                 return {"status": "opened", "path": path}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -208,6 +216,8 @@ class CSTClient:
         file-in-use warning, etc.).  The watcher auto-dismisses it.
         """
         save_path = path or self._project_path
+        from mcp_cst_studio.operation_policy import check_external_change, remember_file
+        check_external_change(self)
         if self.connected and self._project is not None:
             try:
                 if save_path:
@@ -217,6 +227,8 @@ class CSTClient:
                 else:
                     self._project.save()
                 self._project_path = save_path
+                remember_file(self)
+                self._unsaved_backend_edits = False
                 return {"status": "saved", "path": save_path}
             except Exception as e:
                 return {"status": "error", "message": str(e)}
@@ -242,6 +254,8 @@ class CSTClient:
 
     def execute_vba(self, vba_code: str, history_label: str | None = None) -> dict:
         """Execute once in the explicit 3D domain; never replay after partial failure."""
+        from mcp_cst_studio.operation_policy import check_paused
+        check_paused(self, "cst_execute_vba", {"code": vba_code})
         if not self.connected or self._project is None:
             return {"status": "offline", "vba": vba_code,
                     "message": "VBA generated; no CST execution occurred."}
@@ -298,6 +312,8 @@ class CSTClient:
 
     def solver_command(self, command: str) -> dict:
         """Native asynchronous 3D controls. DS task execution has a separate contract."""
+        if self._config.simulation_paused and command in ("start", "resume"):
+            return {"status": "error", "message": "Automatic simulation is paused"}
         if getattr(self, "_task_job", None):
             from mcp_cst_studio.task_runner import cancel_task, task_status, TERMINAL
             if command == "stop":
@@ -693,6 +709,8 @@ class CSTClient:
 
     def execute_vba_silent(self, vba_code: str) -> dict:
         """Execute only in the schematic domain, without automatic dialog acceptance."""
+        from mcp_cst_studio.operation_policy import check_paused
+        check_paused(self, "cst_execute_vba_silent", {"code": vba_code})
         if not self.connected or self._project is None:
             return {"status": "offline", "vba": vba_code,
                     "message": "VBA generated; no CST execution occurred."}
@@ -731,6 +749,8 @@ class CSTClient:
         Uses ``model3d.run_solver()`` which blocks until complete.
         If a solver is already running, waits for it to finish first.
         """
+        if self._config.simulation_paused:
+            return {"status": "error", "message": "Automatic simulation is paused"}
         if self.connected and self._project is not None:
             try:
                 # Wait for any in-progress solver before starting
