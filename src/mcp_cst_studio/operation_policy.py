@@ -49,6 +49,9 @@ def prepare_edit(client, tool: str, args: dict) -> None:
     """Read actual state, then branch an existing model once per editing interval."""
     if not client._config.session_dir or not client.connected or not client.has_project or not is_model_edit(tool, args):
         return
+    if tool == "cst_schematic_call":
+        if args.get("object_name") not in ("Block", "CircuitProbe", "SimulationTask", "ExternalPort") or not args.get("target_name"):
+            raise ValueError("Session edits require an explicit supported target_name; pre-edit readback changes selection. Use a specialized tool for Net/other mutations")
     from mcp_cst_studio.tools.cases import readback
     from mcp_cst_studio.session_workspace import write_json, read_json, render_entry
     root = Path(client._config.session_dir)

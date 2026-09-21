@@ -93,3 +93,13 @@ async def test_reload_refuses_active_solver_without_closing(tmp_path):
     result = json.loads((await handle("cst_reload_project", {"path": str(tmp_path / "x.cst")}, client))[0].text)
     assert result["status"] == "error"
     client._project.close.assert_not_called()
+
+
+def test_generic_edit_cannot_use_selection_changed_by_pre_readback(tmp_path):
+    from mcp_cst_studio.operation_policy import prepare_edit
+    client = CSTClient(CSTConfig(connected=True, session_dir=str(tmp_path)))
+    client._project = object()
+    with patch("mcp_cst_studio.cst_client.CST_AVAILABLE", True):
+        with pytest.raises(ValueError, match="explicit supported target_name"):
+            prepare_edit(client, "cst_schematic_call", {"object_name": "Block", "method_name": "SetDoubleProperty", "args": ["Resistance", 50]})
+    assert not list(tmp_path.rglob("*.cst"))

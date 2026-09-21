@@ -107,4 +107,4 @@ D2 的运行框架沿用原 CSTClient/MCP：3D 与 DS 共用一个小型进程�
 
 本轮属于工程开发回归，未开展正式论文对比实验。W2可引用内容是文件归属、只读刷新/保存重开、版本隔离和真实负结果；不能据此宣称自主复现/数值精度的算法优势。
 
-W2离线592通过；PiDeck全量2138通过、2跳过、0失败，typecheck/build通过。[脱敏摘要](evidence/20260921-w2-summary.json)。桌面提交`6bf318c7f45b3abaf2f79722c4f755cb07e7025b`，补丁随主仓库公开；原有package-lock改动保留在独立桌面工作区，未混入本轮提交。
+W2离线593通过；PiDeck全量2138通过、2跳过、0失败，typecheck/build通过。[脱敏摘要](evidence/20260921-w2-summary.json)。桌面提交`6bf318c7f45b3abaf2f79722c4f755cb07e7025b`，补丁随主仓库公开；原有package-lock改动保留在独立桌面工作区，未混入本轮提交。

@@ -4,7 +4,7 @@
   "baseline": "15c708b81d8d268a38141c510413aece9e8eceb8",
   "scope": "session-local complete native projects and manual inspection; no new solving",
   "offline_tests": {
-    "passed": 592
+    "passed": 593
   },
   "desktop_tests": {
     "passed": 2138,
