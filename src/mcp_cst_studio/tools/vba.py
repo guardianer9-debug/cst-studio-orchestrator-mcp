@@ -55,7 +55,8 @@ TOOLS: list[Tool] = [
         description=(
             "Read installed official CST HTML help, with source path/hash and configured version. "
             "Query exact object_name and optional method_name; use domain to distinguish 3d/schematic/cable. "
-            "section=example returns official examples only. Long excerpts paginate via next_offset. "
+            "section=example returns official examples only. Long excerpts paginate via next_offset; "
+            "method-name lists via next_method_offset. Inspect parse_warnings for unsupported source formatting. "
             "Missing sources/methods never fall back to bundled summaries. This is reference, not execution verification."
         ),
         inputSchema={
@@ -72,6 +73,8 @@ TOOLS: list[Tool] = [
                 "domain": {"type": "string", "enum": ["3d", "schematic", "cable"]},
                 "section": {"type": "string", "enum": ["object", "example"], "default": "object"},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "method_offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Method-name list offset; independent of excerpt offset."},
+                "method_limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
                 "max_chars": {"type": "integer", "minimum": 256, "maximum": 24000, "default": 10000},
             },
             "required": ["object_name"],

@@ -139,3 +139,97 @@ async def test_help_remains_readable_when_project_is_stale_or_task_owned(page, m
     result = await registry.invoke("cst_vba_help", {"object_name": "Solid"})
     assert not result.isError
     assert json.loads(result.content[0].text)["status"] == "ok"
+
+
+
+def test_split_signature_and_return_type_names(page):
+    config, path = page
+    path.write_text("""<h1>Solid</h1>
+<p class="VBA-Heading-Method">Refine (string shape,</p>
+<p class="VBA-Heading-Method">bool enabled, double factor )</p>
+<p>Refinement description.</p>
+<p class="VBA-Heading-Method">GetNumberOfShapes int</p><p>Count description.</p>
+<p class="VBA-Heading-Method">GetNextFreeName name</p><p>Next name.</p>""", encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid"})
+    assert r["method_names"] == ["Refine", "GetNumberOfShapes", "GetNextFreeName"]
+    assert help.lookup(config, {"object_name": "Solid", "method_name": "GetNumberOfShapes"})["status"] == "ok"
+    r = help.lookup(config, {"object_name": "Solid", "method_name": "Refine"})
+    assert "bool enabled, double factor" in r["excerpt"]
+
+
+def test_aliases_and_abbreviated_axes_are_searchable(page):
+    config, path = page
+    path.write_text("""<h1>Solid</h1>
+<p class="VBA-Heading-Method">SetP1 / SetP2 (double value)</p><p>Shared description.</p>
+<p class="VBA-Heading-Method">Coeff / CoeffX/Y/Z (double value)</p><p>Axis description.</p>
+<p class="VBA-Heading-Method">CableStudio.CreateCable (string value)</p><p>Qualified method.</p>""", encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid"})
+    assert r["method_names"] == ["SetP1", "SetP2", "Coeff", "CoeffX", "CoeffY", "CoeffZ", "CableStudio.CreateCable"]
+    for name in r["method_names"]:
+        assert help.lookup(config, {"object_name": "Solid", "method_name": name})["status"] == "ok"
+
+
+def test_overloads_do_not_repeat_shared_body(page):
+    config, path = page
+    path.write_text('<h1>Solid</h1><p class="VBA-Heading-Method">SetValue (double x)</p><p class="VBA-Heading-Method">SetValue (string x)</p><p>Shared description.</p>', encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid", "method_name": "SetValue"})
+    assert r["excerpt"].count('SetValue (string x)') == 1
+    assert r["excerpt"].count('Shared description.') == 1
+
+
+def test_examples_exclude_defaults_and_keep_table_and_list_text(page):
+    config, path = page
+    path.write_text("""<h1>Solid</h1>
+<p class="VBA-Heading-Category">Default Settings</p><p class="VBA-Text-Example">DefaultOnly</p>
+<p class="VBA-Heading-Category">Examples</p><p class="VBA-Text-Example">ExampleOnly</p>
+<ul><li>Important condition</li></ul><table><tr><td>column name</td><td>column value</td></tr></table>
+<p class="VBA-Heading-Category">See also</p><p>OtherPage</p>""", encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid", "section": "example"})
+    assert 'DefaultOnly' not in r['excerpt']
+    assert 'OtherPage' not in r['excerpt']
+    assert 'ExampleOnly' in r['excerpt'] and 'Important condition' in r['excerpt']
+    assert 'column name' in r['excerpt'] and 'column value' in r['excerpt']
+
+
+def test_unrecognized_method_heading_warns_instead_of_inventing_name(page):
+    config, path = page
+    path.write_text('<h1>Solid</h1><p class="VBA-Heading-Method">Reset</p><p class="VBA-Heading-Method">This is actually a description.</p>', encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid", "method_name": "Reset"})
+    assert r['method_names'] == ['Reset']
+    assert r['parse_warnings']
+    assert 'This is actually a description.' in r['excerpt']
+
+
+def test_method_names_have_independent_lossless_pagination(page):
+    config, path = page
+    path.write_text('<h1>Solid</h1>'+''.join(f'<p class="VBA-Heading-Method">Method{i}</p><p>desc</p>' for i in range(205)), encoding="utf-8")
+    first = help.lookup(config, {"object_name": "Solid"})
+    assert first['next_method_offset'] == 200
+    last = help.lookup(config, {"object_name": "Solid", "method_offset": first['next_method_offset']})
+    assert first['method_names'] + last['method_names'] == [f'Method{i}' for i in range(205)]
+    assert last['next_method_offset'] is None
+
+
+
+def test_name_method_is_not_confused_with_name_return_type(page):
+    config, path = page
+    path.write_text('<h1>Solid</h1><p class="VBA-Heading-Method">Name (name item)</p><p>Set name.</p><p class="VBA-Heading-Method">GetName name</p><p>Get name.</p>', encoding="utf-8")
+    r = help.lookup(config, {"object_name": "Solid"})
+    assert r['method_names'] == ['Name', 'GetName']
+    assert not r['parse_warnings']
+
+
+
+@pytest.mark.parametrize('args', [{'method_offset': -1}, {'method_limit': 0}, {'method_limit': 201}])
+def test_invalid_name_pagination_is_rejected(page, args):
+    config, _ = page
+    assert help.lookup(config, {'object_name': 'Solid', **args})['status'] == 'error'
+
+
+def test_unfinished_signature_is_visible_as_warning(page):
+    config, path = page
+    path.write_text('<h1>Solid</h1><p class="VBA-Heading-Method">Broken (string x,</p><p>Missing source continuation.</p><p class="VBA-Heading-Method">Reset</p><p>Reset text.</p>', encoding='utf-8')
+    r = help.lookup(config, {'object_name': 'Solid', 'method_name': 'Broken'})
+    assert r['parse_status'] == 'partial'
+    assert any(w['reason'] == 'unbalanced_signature' for w in r['parse_warnings'])
+    assert 'Reset text.' not in r['excerpt']

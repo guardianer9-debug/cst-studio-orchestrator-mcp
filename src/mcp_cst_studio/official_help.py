@@ -32,7 +32,7 @@ class _Page(HTMLParser):
             self.skip += 1
         if self.skip:
             return
-        if tag in ("p", "h1", "h2", "h3", "pre"):
+        if tag in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "td", "th", "li"):
             self._flush()
             self.active = (tag, dict(attrs).get("class", "").lower(), self.getpos()[0])
         elif tag == "br" and self.active:
@@ -56,6 +56,69 @@ class _Page(HTMLParser):
                 self.blocks.append({"tag": tag, "class": cls, "line": line, "text": text})
         self.active = None
         self.parts = []
+
+
+_IDENTIFIER = r"[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*"
+_RETURN_TYPE = r"(?:bool|boolean|int|integer|long|double|float|string|name|variant|enum|object|void|double_array)"
+
+
+def _signature_names(text: str) -> list[str]:
+    """Read documented identifiers, return-type suffixes and explicit slash aliases.
+
+    The only abbreviation expanded is the manual's X/Y/Z axis suffix notation.
+    Parameter continuations and prose headings must never become method names.
+    """
+    head = " ".join(text.split()).split("(", 1)[0].strip()
+    if "(" not in text:
+        match = re.fullmatch(rf"({_IDENTIFIER})(?:\s+{_RETURN_TYPE}\b.*)?", head, re.I)
+        return [match[1]] if match else []
+    parts = [p.strip() for p in head.split("/")]
+    if not all(re.fullmatch(_IDENTIFIER, p) for p in parts):
+        return []
+    names = []
+    for part in parts:
+        if part in ("Y", "Z") and names and names[-1].endswith(("X", "Y")):
+            part = names[-1][:-1] + part
+        names.append(part)
+    return names
+
+
+def _methods(blocks: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Join wrapped signatures by parenthesis balance; retain unsupported source as warnings."""
+    methods, warnings = [], []
+    pending = None
+
+    def balance(text):
+        # Parentheses in quoted default values are not signature delimiters.
+        text = re.sub(r'"(?:[^\"]|\"\")*"', '', text)
+        return text.count("(") - text.count(")")
+
+    def finish():
+        if pending and balance(pending["signature"]) != 0:
+            warnings.append({"line": pending["line"], "reason": "unbalanced_signature"})
+
+    for index, block in enumerate(blocks):
+        if "heading-method" not in block["class"]:
+            finish()
+            pending = None
+            continue
+        names = _signature_names(block["text"])
+        if names:
+            finish()
+            pending = {"index": index, "line": block["line"], "names": names,
+                       "signature": block["text"]}
+            methods.append(pending)
+        elif pending and balance(pending["signature"]) > 0:
+            pending["signature"] += "\n" + block["text"]
+        else:
+            warnings.append({"line": block["line"], "reason": "unrecognized_method_heading",
+                             "text": block["text"][:160]})
+    finish()
+    return methods, warnings
+
+
+def _category(block: dict) -> bool:
+    return "heading-category" in block["class"] or block["tag"] in ("h1", "h2", "h3", "h4", "h5", "h6")
 
 
 def list_objects(config: CSTConfig, category=None) -> dict:
@@ -106,30 +169,48 @@ def lookup(config: CSTConfig, args: dict) -> dict:
     result = {"object_name": entry["object_name"], "domain": entry["domain"], "category": entry["category"],
               "source": source, "document_title": blocks[0]["text"], "runtime_verified": False,
               "project_notes": [], "note": "Official reference only; method lookup does not verify an operation or permit solving."}
-    method_blocks = [(i, b) for i, b in enumerate(blocks) if "heading-method" in b["class"]]
-    def method_name(b):
-        return b["text"].split("(", 1)[0].strip().casefold()
-    names = list(dict.fromkeys(b["text"].split("(", 1)[0].strip() for _, b in method_blocks))
-    result.update(method_names=names[:200], method_names_truncated=len(names) > 200)
+    methods, warnings = _methods(blocks)
+    names = list(dict.fromkeys(name for m in methods for name in m["names"]))
+    method_offset = int(args.get("method_offset", 0))
+    method_limit = int(args.get("method_limit", 200))
+    if method_offset < 0 or not 1 <= method_limit <= 200:
+        return {**result, "status": "error", "message": "method_offset must be nonnegative; method_limit must be 1..200."}
+    next_method = method_offset + method_limit
+    result.update(method_names=names[method_offset:next_method], method_names_total=len(names),
+                  method_names_truncated=next_method < len(names),
+                  next_method_offset=next_method if next_method < len(names) else None,
+                  parse_warnings=warnings, parse_status="partial" if warnings else "complete")
     method = str(args.get("method_name", "")).strip()
     section = args.get("section", "object")
     if method and section == "example":
         return {**result, "status": "error", "message": "Use method_name or section=example, not both."}
     selected = blocks
     if method:
-        selected = []
-        for index, block in method_blocks:
-            if method_name(block) != method.casefold():
+        selected_indices = set()
+        starts = {m["index"] for m in methods}
+        matched = []
+        for record in methods:
+            if method.casefold() not in [n.casefold() for n in record["names"]]:
                 continue
+            index = record["index"]
+            matched.append({"signature": record["signature"], "source_line": record["line"]})
             end = index + 1
             # DES groups several property signatures before one shared description.
             while end < len(blocks) and "heading-method" in blocks[end]["class"]:
                 end += 1
-            while end < len(blocks) and not any(x in blocks[end]["class"] for x in ("heading-method", "heading-category")):
+            while end < len(blocks) and end not in starts and not _category(blocks[end]):
                 end += 1
-            selected.extend(blocks[index:end])
+            selected_indices.update(range(index, end))
+        selected = [blocks[i] for i in sorted(selected_indices)]
+        result["matched_signatures"] = matched
     elif section == "example":
-        selected = [b for b in blocks if "text-example" in b["class"] or b["tag"] == "pre"]
+        selected = []
+        in_example = False
+        for block in blocks:
+            if _category(block):
+                in_example = bool(re.match(r"^examples?\b", block["text"], re.I))
+            elif in_example:
+                selected.append(block)
     if not selected:
         return {**result, "status": "not_found", "message": "Requested method/example not found in this official page. No generated substitute."}
     text = "\n".join(b["text"] for b in selected)
