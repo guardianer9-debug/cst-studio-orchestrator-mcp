@@ -1,7 +1,7 @@
 {
   "upstream": "https://github.com/ayuayue/PiDeck",
   "base_commit": "1979f98d7cab86bd627c1c386f954ae5e0e64fdd",
-  "desktop_commit": "a430d299ba391717d82b819d241dd51ae15b6aba",
+  "desktop_commit": "b6c5dce35c3e5f36e86b2ef6cd05d4411652d4d9",
   "desktop_branch": "feat/cst-session-workbench-20260921",
   "patch": "0001-session-workbench.patch",
   "runtime": "PiDeck 0.7.1 / Pi 0.85.1",
@@ -10,6 +10,8 @@
   "patches": [
     "0001-session-workbench.patch",
     "0002-workbench-handoff.patch",
-    "0003-schematic-pins.patch"
-  ]
+    "0003-schematic-pins.patch",
+    "0004-desktop-isolation.patch"
+  ],
+  "desktop_runtime": "Electron 38.8.6 dedicated local copy; no upgrade"
 }

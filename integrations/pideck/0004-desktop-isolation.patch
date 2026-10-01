@@ -1,0 +1,259 @@
+From b6c5dce35c3e5f36e86b2ef6cd05d4411652d4d9 Mon Sep 17 00:00:00 2001
+From: guardianer9-debug <236944481+guardianer9-debug@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 03:04:07 -0400
+Subject: [PATCH] fix: preserve shared Pi extensions and record desktop
+ lifecycle exits
+
+---
+ src/main/index.ts                        | 46 +++----------------
+ src/main/logging/lifecycleDiagnostics.ts | 37 ++++++++++++++++
+ tests/builtInExtensions.test.mjs         |  2 +-
+ tests/lifecycleDiagnostics.test.mjs      | 56 ++++++++++++++++++++++++
+ tests/telemetryService.test.mjs          |  8 ++--
+ 5 files changed, 104 insertions(+), 45 deletions(-)
+ create mode 100644 src/main/logging/lifecycleDiagnostics.ts
+ create mode 100644 tests/lifecycleDiagnostics.test.mjs
+
+diff --git a/src/main/index.ts b/src/main/index.ts
+index ed05e50..254c0be 100644
+--- a/src/main/index.ts
++++ b/src/main/index.ts
+@@ -1,3 +1,4 @@
++import { registerLifecycleDiagnostics } from "./logging/lifecycleDiagnostics";
+ import { retainBoundCstDraft } from "./cst/CstWorkspaceService";
+ import { registerCstIpc } from "./ipc/cstIpc";
+ import {
+@@ -17,7 +18,7 @@ import {
+ import { randomUUID } from "node:crypto";
+ import { basename, join } from "node:path";
+ import { createWriteStream, existsSync } from "node:fs";
+-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
++import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+ import { is } from "@electron-toolkit/utils";
+ import { PetSystem, type PetSystemDeps } from "./pet";
+ import {
+@@ -58,6 +59,8 @@ if (isDevBuild) {
+ 	}
+ }
+ 
++registerLifecycleDiagnostics(app);
++
+ // Linux XWayland 兼容层：仅当桌面宠物启用时才强制 ozone-platform=x11（#108，
+ // 强制 XWayland 在部分 GNOME/Wayland 环境会导致主窗口不可见）。
+ // ozone 平台一经启动不可更改，整个生命周期统一使用启动时快照。
+@@ -2811,11 +2814,8 @@ app.whenReady().then(async () => {
+ 	};
+ 	await syncWslConfig();
+ 
+-	// 内置扩展改为 RPC -e 注入（见 PiProcess/AgentManager），不再复制到用户扩展目录。
+-	// 启动时清理历史版本部署的 pi-deck-* 与已下线扩展，避免 CLI/RPC 双加载。
+-	await migrateLegacyBuiltInExtensions().catch((error) => {
+-		console.error("Failed to migrate legacy built-in extensions:", error);
+-	});
++	// CST built-ins load from app resources via explicit -e; shared Pi extensions belong
++	// to other clients too. Never delete them during desktop startup.
+ 
+ 	// 补齐 pi settings.json 缺失的默认配置项，新安装或精简配置的用户无需手动添加。
+ 	await ensureAllPiSettingsDefaults().catch((error) => {
+@@ -2923,40 +2923,6 @@ app.whenReady().then(async () => {
+ 	});
+ });
+ 
+-/**
+- * 删除用户扩展目录中的 PiDeck 扩展文件（历史部署或已下线扩展）。
+- * 内置扩展现改为 -e 从 app resources 加载，用户目录不应再有 pi-deck-* 副本。
+- */
+-async function removeStalePiDeckExtension(extensionName: string, homeDir?: string): Promise<void> {
+-	const home = homeDir ?? app.getPath("home");
+-	const targetPath = join(home, ".pi", "agent", "extensions", extensionName);
+-	await rm(targetPath, { force: true });
+-	appLogger?.info("extension", "Removed legacy/stale extension", { path: targetPath });
+-}
+-
+-/**
+- * 升级迁移：清掉历史版本复制到 ~/.pi/agent/extensions 的内置扩展与已下线扩展。
+- * 覆盖 Windows home；WSL 启用时同步清理 \\wsl$ 映射 home。
+- */
+-async function migrateLegacyBuiltInExtensions(): Promise<void> {
+-	const { BUILT_IN_EXTENSIONS } = await import("./extensions/builtInExtensions");
+-	const legacyNames = [
+-		...BUILT_IN_EXTENSIONS,
+-		"pi-deck-project-trust.ts",
+-		"pi-deck-file-capture.ts",
+-	];
+-	const homes = [app.getPath("home")];
+-	const wslSettings = settingsStore.get();
+-	if (wslSettings.wslEnabled && wslSettings.wslDistro && wslSettings.wslUser) {
+-		homes.push(`\\\\wsl$\\${wslSettings.wslDistro}\\home\\${wslSettings.wslUser}`);
+-	}
+-	for (const home of homes) {
+-		for (const name of legacyNames) {
+-			await removeStalePiDeckExtension(name, home).catch(() => undefined);
+-		}
+-	}
+-}
+-
+ /**
+  * 补齐 pi 全局 settings.json 的推荐默认项。
+  * 仅添加缺失的 key，不覆盖用户已有配置。
+diff --git a/src/main/logging/lifecycleDiagnostics.ts b/src/main/logging/lifecycleDiagnostics.ts
+new file mode 100644
+index 0000000..4403f46
+--- /dev/null
++++ b/src/main/logging/lifecycleDiagnostics.ts
+@@ -0,0 +1,37 @@
++import type { App } from "electron";
++import { appendFileSync, mkdirSync } from "node:fs";
++import { join } from "node:path";
++
++/** Rare lifecycle events use synchronous writes: the async app log can be lost at exit.
++ * No prompts, command-line arguments, environment variables or credentials are recorded.
++ * A hard kill cannot execute these handlers; the external launcher records its exit code.
++ */
++export function registerLifecycleDiagnostics(app: App, runtime = process): void {
++	const directory = join(app.getPath("userData"), "logs");
++	const write = (event: string, detail: Record<string, unknown> = {}) => {
++		try {
++			const time = new Date().toISOString();
++			mkdirSync(directory, { recursive: true });
++			appendFileSync(join(directory, `lifecycle-${time.slice(0, 10)}.jsonl`),
++				`${JSON.stringify({ time, pid: runtime.pid, event, ...detail })}\n`, "utf8");
++		} catch {
++			// Logging failures must not change application shutdown/recovery behavior.
++		}
++	};
++	write("startup", { version: app.getVersion(), electron: runtime.versions.electron,
++		executable: runtime.execPath, profile: app.getPath("userData") });
++	app.on("before-quit", () => write("before-quit"));
++	app.on("will-quit", () => write("will-quit"));
++	app.on("quit", (_event, exitCode) => write("quit", { exitCode }));
++	app.on("browser-window-created", (_event, window) => {
++		window.on("close", () => write("window-close-request", { windowId: window.id }));
++		window.on("closed", () => write("window-closed", { windowId: window.id }));
++	});
++	app.on("render-process-gone", (_event, contents, details) =>
++		write("render-process-gone", { webContentsId: contents.id, reason: details.reason, exitCode: details.exitCode }));
++	app.on("child-process-gone", (_event, details) =>
++		write("child-process-gone", { type: details.type, reason: details.reason, exitCode: details.exitCode }));
++	runtime.on("uncaughtExceptionMonitor", (error, origin) =>
++		write("uncaught-exception", { name: error.name, origin }));
++	runtime.on("exit", (exitCode) => write("process-exit", { exitCode }));
++}
+diff --git a/tests/builtInExtensions.test.mjs b/tests/builtInExtensions.test.mjs
+index 7d6e5f0..2c92b1c 100644
+--- a/tests/builtInExtensions.test.mjs
++++ b/tests/builtInExtensions.test.mjs
+@@ -89,7 +89,7 @@ test("AgentManager no longer deploys built-ins via ensurePiDeckExtension", () =>
+ 	const processSource = readFileSync("src/main/pi/PiProcess.ts", "utf8");
+ 	assert.doesNotMatch(index, /async function ensurePiDeckExtension/);
+ 	assert.doesNotMatch(storeIpc, /ensurePiDeckExtension/);
+-	assert.match(index, /migrateLegacyBuiltInExtensions/);
++	assert.doesNotMatch(index, /migrateLegacyBuiltInExtensions|removeStalePiDeckExtension/);
+ 	assert.match(processSource, /appendBuiltInExtensionArgs/);
+ 	assert.match(processSource, /--extension/);
+ });
+diff --git a/tests/lifecycleDiagnostics.test.mjs b/tests/lifecycleDiagnostics.test.mjs
+new file mode 100644
+index 0000000..bf04e42
+--- /dev/null
++++ b/tests/lifecycleDiagnostics.test.mjs
+@@ -0,0 +1,56 @@
++import assert from "node:assert/strict";
++import { EventEmitter } from "node:events";
++import { createRequire } from "node:module";
++import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import test from "node:test";
++import vm from "node:vm";
++import ts from "typescript";
++
++const require = createRequire(import.meta.url);
++const sandbox = { exports: {}, require };
++vm.runInNewContext(ts.transpileModule(readFileSync("src/main/logging/lifecycleDiagnostics.ts", "utf8"), {
++  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
++}).outputText, sandbox);
++
++function start(profile) {
++  const app = Object.assign(new EventEmitter(), { getPath: () => profile, getVersion: () => "0.7.1" });
++  const runtime = Object.assign(new EventEmitter(), { pid: 123, versions: { electron: "38.8.6" }, execPath: "cst/electron.exe" });
++  sandbox.exports.registerLifecycleDiagnostics(app, runtime);
++  return { app, runtime };
++}
++
++test("exit events are persisted synchronously and do not suppress the normal exit path", () => {
++  const dir = mkdtempSync(join(tmpdir(), "cst-lifecycle-"));
++  try {
++    const { app, runtime } = start(dir);
++    const window = Object.assign(new EventEmitter(), { id: 7 });
++    app.emit("browser-window-created", {}, window);
++    window.emit("close");
++    app.emit("render-process-gone", {}, { id: 9 }, { reason: "oom", exitCode: -1 });
++    app.emit("child-process-gone", {}, { type: "GPU", reason: "crashed", exitCode: 3 });
++    runtime.emit("uncaughtExceptionMonitor", new Error("secret must not be copied"), "uncaughtException");
++    app.emit("before-quit");
++    window.emit("closed");
++    app.emit("will-quit");
++    app.emit("quit", {}, 0);
++    runtime.emit("exit", 0);
++    const text = readFileSync(join(dir, "logs", readdirSync(join(dir, "logs"))[0]), "utf8");
++    const rows = text.trim().split("\n").map(JSON.parse);
++    assert.deepEqual(rows.map(r => r.event), ["startup", "window-close-request", "render-process-gone", "child-process-gone", "uncaught-exception", "before-quit", "window-closed", "will-quit", "quit", "process-exit"]);
++    assert.equal(rows[2].reason, "oom");
++    assert.equal(rows.at(-1).exitCode, 0);
++    assert.equal(runtime.listenerCount("uncaughtException"), 0);
++    assert.ok(!text.includes("secret must not be copied"));
++  } finally { rmSync(dir, { recursive: true, force: true }); }
++});
++
++test("unwritable diagnostics do not prevent startup or shutdown", () => {
++  const dir = mkdtempSync(join(tmpdir(), "cst-lifecycle-failure-"));
++  try {
++    writeFileSync(join(dir, "logs"), "not a directory");
++    const { app, runtime } = start(dir);
++    assert.doesNotThrow(() => { app.emit("before-quit"); runtime.emit("exit", 1); });
++  } finally { rmSync(dir, { recursive: true, force: true }); }
++});
+diff --git a/tests/telemetryService.test.mjs b/tests/telemetryService.test.mjs
+index bfd8dbb..ab2d647 100644
+--- a/tests/telemetryService.test.mjs
++++ b/tests/telemetryService.test.mjs
+@@ -48,7 +48,7 @@ test("does not send heartbeat without a PostHog project key", async () => {
+ 			arch: "x64",
+ 			packaged: true,
+ 		},
+-		now: () => new Date("2026-06-11T01:00:00Z"),
++		now: () => new Date(2026, 5, 11, 1, 0, 0),
+ 		createInstallId: () => "install-1",
+ 	});
+ 
+@@ -75,7 +75,7 @@ test("sends one anonymous heartbeat per local date", async () => {
+ 			arch: "x64",
+ 			packaged: true,
+ 		},
+-		now: () => new Date("2026-06-11T01:00:00Z"),
++		now: () => new Date(2026, 5, 11, 1, 0, 0),
+ 		createInstallId: () => "install-1",
+ 	});
+ 
+@@ -124,7 +124,7 @@ test("skips heartbeat when telemetry is disabled", async () => {
+ 			arch: "x64",
+ 			packaged: true,
+ 		},
+-		now: () => new Date("2026-06-11T01:00:00Z"),
++		now: () => new Date(2026, 5, 11, 1, 0, 0),
+ 		createInstallId: () => "install-1",
+ 	});
+ 
+@@ -150,7 +150,7 @@ test("skips heartbeat outside packaged builds", async () => {
+ 			arch: "x64",
+ 			packaged: false,
+ 		},
+-		now: () => new Date("2026-06-11T01:00:00Z"),
++		now: () => new Date(2026, 5, 11, 1, 0, 0),
+ 		createInstallId: () => "install-1",
+ 	});
+ 
+-- 
+2.54.0.windows.1
+
