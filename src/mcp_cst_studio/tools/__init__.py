@@ -63,10 +63,10 @@ class ToolRegistry:
             async def guarded(name, args, _h=handle_fn, _c=client):
                 from mcp_cst_studio.operation_policy import check_paused, check_external_change
                 check_paused(_c, name, args)
-                if name not in ("cst_close_project", "cst_reload_project", "cst_connection_status", "cst_get_simulation_status", "cst_stop_simulation"):
+                if name not in ("cst_close_project", "cst_reload_project", "cst_connection_status", "cst_get_simulation_status", "cst_stop_simulation", "cst_vba_help", "cst_list_vba_objects"):
                     check_external_change(_c)
                 if getattr(_c, "_task_job", None) and name not in (
-                    "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status", "cst_read_project_log"
+                    "cst_get_simulation_status", "cst_stop_simulation", "cst_connection_status", "cst_read_project_log", "cst_vba_help", "cst_list_vba_objects"
                 ):
                     from mcp_cst_studio.task_runner import task_status, TERMINAL
                     state = task_status(_c)

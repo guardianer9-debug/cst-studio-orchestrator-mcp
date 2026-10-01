@@ -32,6 +32,7 @@ async def test_automation_guardrails_include_observed_cst_failures(
     data = _parse(result)
     assert data["status"] == "ok"
     rule_ids = {rule["id"] for rule in data["rules"]}
+    assert "solid_material_requires_change_material" in rule_ids
     assert "probe_label_not_supported" in rule_ids
     assert "gaussian_signal_requires_fmin_fmax" in rule_ids
     assert "schematic_tasks_not_in_3d_history" in rule_ids

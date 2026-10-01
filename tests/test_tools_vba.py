@@ -11,8 +11,13 @@ from mcp_cst_studio.config import CSTConfig
 
 
 @pytest.fixture
-def client() -> CSTClient:
-    return CSTClient(config=CSTConfig(connected=False))
+def client(tmp_path) -> CSTClient:
+    from mcp_cst_studio.official_help import entries
+    for e in entries():
+        path = tmp_path / "Online Help/mergedProjects" / e["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'<h1>{e["object_name"]} Object</h1><p class="VBA-Heading-Method">Reset</p><p>Synthetic fixture.</p>', encoding="utf-8")
+    return CSTClient(config=CSTConfig(connected=False, cst_path=str(tmp_path)))
 
 
 @pytest.mark.asyncio
@@ -78,7 +83,9 @@ async def test_vba_help_known_object(client: CSTClient):
     assert len(result) == 1
     data = json.loads(result[0].text)
     # Either found (status=ok with object_name) or not found (status=not_found)
-    assert data.get("status") in ("ok", "not_found")
+    assert data.get("status") == "ok"
+    assert data["source"]["kind"] == "official_local_html"
+    assert data["runtime_verified"] is False
     if data.get("status") == "ok":
         assert "object_name" in data
 
@@ -107,7 +114,7 @@ async def test_list_vba_objects_all(client: CSTClient):
     data = json.loads(result[0].text)
     assert "status" in data
     # Returns either categories dict or an error
-    assert data.get("status") in ("ok", "error")
+    assert data.get("status") == "ok"
 
 
 @pytest.mark.asyncio
@@ -119,7 +126,7 @@ async def test_list_vba_objects_by_category(client: CSTClient):
     data = json.loads(result[0].text)
     assert "status" in data
     # Either found the category (ok) or it doesn't exist in reference data (error)
-    assert data.get("status") in ("ok", "error")
+    assert data.get("status") == "ok"
 
 
 @pytest.mark.asyncio

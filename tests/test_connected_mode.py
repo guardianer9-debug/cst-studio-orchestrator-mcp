@@ -245,6 +245,7 @@ class TestMaterialsConnected:
     async def test_assign_material(self, mock_client: CSTClient):
         from mcp_cst_studio.tools.materials import handle
 
+        mock_client._project.model3d.Solid.GetMaterialNameForShape.return_value = "Rogers4003C"
         result = await handle(
             "cst_assign_material",
             {"solid": "Antenna:substrate", "material": "Rogers4003C"},

@@ -125,11 +125,8 @@ TOOLS: list[Tool] = [
     Tool(
         name="cst_start_dialog_watcher",
         description=(
-            "Start a background thread that automatically detects and "
-            "dismisses CST dialog windows as they appear. Essential for "
-            "long-running operations like optimization loops where dialogs "
-            "would otherwise block execution. The watcher logs every dialog "
-            "it dismisses — retrieve the log with cst_stop_dialog_watcher."
+            "Unsupported: automatic dialog acceptance is disabled. This compatibility endpoint "
+            "returns unsupported and does not start a watcher. Inspect dialogs explicitly instead."
         ),
         inputSchema={
             "type": "object",
@@ -155,6 +152,16 @@ TOOLS: list[Tool] = [
 _TOOL_NAMES = {t.name for t in TOOLS}
 
 _AUTOMATION_GUARDRAILS: list[dict[str, str]] = [
+    {
+        "id": "solid_material_requires_change_material",
+        "area": "3D material assignment",
+        "problem": "Legacy MCP help and assignment used Solid.SetMaterial, which failed with CST 2025 error 10091.",
+        "safe_pattern": "Use cst_assign_material (Solid.ChangeMaterial), then require actual material readback, save and reopen verification.",
+        "source_kind": "project_observation_separate_from_official_reference",
+        "official_reference": "VBA_3D/common_vbasolido/common_vbasolido_solid_object.htm",
+        "validation": "CST 2025.2: standalone brick Vacuum to PEC, geometry unchanged, independent version and save/reopen passed; no solve. Other material types are not certified by this check.",
+        "evidence": "docs/cst-agent/official-help.md",
+    },
     {
         "id": "probe_label_not_supported",
         "area": "3D probes",

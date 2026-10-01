@@ -59,3 +59,20 @@ async def test_create_lossy_metal(client: CSTClient):
     vba = data.get("vba", "")
     assert "Material" in vba
     assert "Lossy metal" in vba or "lossy" in vba.lower()
+
+
+@pytest.mark.asyncio
+async def test_assign_material_uses_documented_change_material(client):
+    from mcp_cst_studio.tools.materials import handle
+    data = json.loads((await handle("cst_assign_material", {"solid": "dipole:arm", "material": "PEC"}, client))[0].text)
+    assert '.ChangeMaterial "dipole:arm", "PEC"' in data["vba"]
+    assert "SetMaterial" not in data["vba"]
+
+
+@pytest.mark.asyncio
+async def test_assign_material_rejects_success_without_matching_readback(mock_client):
+    from mcp_cst_studio.tools.materials import handle
+    mock_client._project.model3d.Solid.GetMaterialNameForShape.return_value = "default"
+    data = json.loads((await handle("cst_assign_material", {"solid": "dipole:arm", "material": "PEC"}, mock_client))[0].text)
+    assert data["status"] == "error"
+    assert data["observed_material"] == "default"

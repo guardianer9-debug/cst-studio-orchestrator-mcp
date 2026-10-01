@@ -1,0 +1,191 @@
+{
+  "note": "Path index only. Content is read from the local official installation; no manual text is bundled. Paths checked with CST 2025.",
+  "objects": [
+    {
+      "object_name": "Solid",
+      "domain": "3d",
+      "category": "geometry",
+      "path": "VBA_3D/common_vbasolido/common_vbasolido_solid_object.htm"
+    },
+    {
+      "object_name": "Brick",
+      "domain": "3d",
+      "category": "geometry",
+      "path": "VBA_3D/common_vbabasicsolids/common_vbabrick_object.htm"
+    },
+    {
+      "object_name": "Cylinder",
+      "domain": "3d",
+      "category": "geometry",
+      "path": "VBA_3D/common_vbabasicsolids/common_vbacylinder_object.htm"
+    },
+    {
+      "object_name": "Component",
+      "domain": "3d",
+      "category": "geometry",
+      "path": "VBA_3D/special_vbalayer/special_vbalayerocomponent_object.htm"
+    },
+    {
+      "object_name": "Material",
+      "domain": "3d",
+      "category": "material",
+      "path": "VBA_3D/special_vbalayer/special_vbalayerolayer_object.htm"
+    },
+    {
+      "object_name": "Units",
+      "domain": "3d",
+      "category": "settings",
+      "path": "VBA_3D/common_vbaunitso/common_vbaunitso_units_object.htm"
+    },
+    {
+      "object_name": "Background",
+      "domain": "3d",
+      "category": "boundary",
+      "path": "VBA_3D/special_vbasolver/special_vbasolver_background_object.htm"
+    },
+    {
+      "object_name": "Boundary",
+      "domain": "3d",
+      "category": "boundary",
+      "path": "VBA_3D/special_vbasolver/special_vbasolver_boundary_object.htm"
+    },
+    {
+      "object_name": "Solver",
+      "domain": "3d",
+      "category": "solver",
+      "path": "VBA_3D/special_vbasolver/special_vbasolver_solver_object.htm"
+    },
+    {
+      "object_name": "Mesh",
+      "domain": "3d",
+      "category": "mesh",
+      "path": "VBA_3D/special_vbamesh/special_vbamesho.htm"
+    },
+    {
+      "object_name": "DiscretePort",
+      "domain": "3d",
+      "category": "excitation",
+      "path": "VBA_3D/special_vbaports/special_vbaports_discrete_port_object.htm"
+    },
+    {
+      "object_name": "PlaneWave",
+      "domain": "3d",
+      "category": "excitation",
+      "path": "VBA_3D/special_vbaports/special_vbaports_planewave_object.htm"
+    },
+    {
+      "object_name": "TimeSignal",
+      "domain": "3d",
+      "category": "excitation",
+      "path": "VBA_3D/special_vbasignals/special_vbasignals_timesignal_object.htm"
+    },
+    {
+      "object_name": "Monitor",
+      "domain": "3d",
+      "category": "monitor",
+      "path": "VBA_3D/special_vbamonitors/special_vbamonitors_monitor_object.htm"
+    },
+    {
+      "object_name": "Probe",
+      "domain": "3d",
+      "category": "monitor",
+      "path": "VBA_3D/special_vbamonitors/special_vbamonitors_probe_object.htm"
+    },
+    {
+      "object_name": "Block",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/blockobject.htm"
+    },
+    {
+      "object_name": "Net",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/net_object.htm"
+    },
+    {
+      "object_name": "CircuitProbe",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/circuitprobeobject.htm"
+    },
+    {
+      "object_name": "ExternalPort",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/externalportobject.htm"
+    },
+    {
+      "object_name": "SimulationTask",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/simulationtaskobject.htm"
+    },
+    {
+      "object_name": "Units",
+      "domain": "schematic",
+      "category": "schematic",
+      "path": "VBA_DES/special_vbacommands/unitsobject.htm"
+    },
+    {
+      "object_name": "CableBundleDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/cablebundles/cablebundledefine.htm"
+    },
+    {
+      "object_name": "CableBundleFromCurve",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/cablebundles/cablebundlefromcurve.htm"
+    },
+    {
+      "object_name": "CableBundleFromStartAndEndNode",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/cablebundles/cablebundlefromstartandendnode.htm"
+    },
+    {
+      "object_name": "NodeDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/nodes/nodedefine.htm"
+    },
+    {
+      "object_name": "NodeSetGrounded",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/nodes/nodesetgrounded.htm"
+    },
+    {
+      "object_name": "SegmentDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/segments/segmentdefine.htm"
+    },
+    {
+      "object_name": "SingleWireDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/cable_types/singlewires/singlewiredefine.htm"
+    },
+    {
+      "object_name": "TLMNodeSettings",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/tl_modeling/tlmnodesettings.htm"
+    },
+    {
+      "object_name": "CurrentMonitorDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/currentmonitors/currentmonitordefine.htm"
+    },
+    {
+      "object_name": "ConnectorDefine",
+      "domain": "cable",
+      "category": "cable",
+      "path": "VBA_3D/common_vbacablestudio/connectors/connectordefine.htm"
+    }
+  ]
+}

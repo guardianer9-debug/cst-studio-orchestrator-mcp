@@ -202,7 +202,8 @@ TOOLS: list[Tool] = [
         name="cst_assign_material",
         description=(
             "Assign a material to an existing solid in CST Studio. "
-            "The solid is specified as 'Component:SolidName'."
+            "The solid is specified as 'Component:SolidName'. Uses official Solid.ChangeMaterial "
+            "and verifies actual material readback; save explicitly after successful assignment."
         ),
         inputSchema={
             "type": "object",
@@ -808,11 +809,22 @@ def _handle_assign_material(args: dict, client: CSTClient) -> list[TextContent]:
 
     vba = (
         VBABuilder("Solid")
-        .call_with_args("SetMaterial", f"{component}:{solid_name}", material)
+        .call_with_args("ChangeMaterial", f"{component}:{solid_name}", material)
         .build()
     )
 
     result = client.execute_vba(vba)
+    if result.get("status") == "executed":
+        # Execution alone is not acceptance: observe the material on the actual shape.
+        try:
+            observed = client._project.model3d.Solid.GetMaterialNameForShape(solid)
+            result["observed_material"] = observed
+            if observed != material:
+                result.update(status="error", message="Material readback does not match requested material",
+                              partial_execution_possible=True)
+        except Exception as exc:
+            result.update(status="error", message=f"Material readback failed: {exc}",
+                          partial_execution_possible=True)
     return [TextContent(
         type="text",
         text=json.dumps({

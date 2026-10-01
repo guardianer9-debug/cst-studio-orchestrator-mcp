@@ -209,12 +209,7 @@ class CSTClient:
         }
 
     def save_project(self, path: str | None = None) -> dict:
-        """Save the current project.
-
-        Starts a background dialog watcher because ``project.save()``
-        can trigger a blocking modal dialog (overwrite confirmation,
-        file-in-use warning, etc.).  The watcher auto-dismisses it.
-        """
+        """Save the current project explicitly; automatic dialog acceptance is disabled."""
         save_path = path or self._project_path
         from mcp_cst_studio.operation_policy import check_external_change, remember_file
         check_external_change(self)
@@ -229,6 +224,8 @@ class CSTClient:
                 self._project_path = save_path
                 remember_file(self)
                 self._unsaved_backend_edits = False
+                # An explicit save ends the editing interval; the next edit branches again.
+                self._edit_branch = None
                 return {"status": "saved", "path": save_path}
             except Exception as e:
                 return {"status": "error", "message": str(e)}

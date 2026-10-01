@@ -42,7 +42,7 @@ def check_external_change(client) -> None:
 def is_model_edit(tool: str, args: dict) -> bool:
     if tool == "cst_schematic_call":
         return not str(args.get("method_name", "")).startswith(("Get", "Does", "Is", "Start", "Reset", "Name"))
-    return tool.startswith(("cst_set_", "cst_create_", "cst_delete_", "cst_add_", "cst_transform_")) and tool != "cst_create_project" or tool in ("cst_execute_vba", "cst_execute_vba_silent")
+    return tool.startswith(("cst_set_", "cst_create_", "cst_delete_", "cst_add_", "cst_transform_")) and tool != "cst_create_project" or tool in ("cst_execute_vba", "cst_execute_vba_silent", "cst_assign_material")
 
 
 def prepare_edit(client, tool: str, args: dict) -> None:
